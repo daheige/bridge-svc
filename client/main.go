@@ -81,5 +81,12 @@ func main() {
 		log.Fatal(err)
 	}
 
+	// 如果你的下游服务没开
+	//  reflection，控制台会打印
+	//  warning，客户端仍然报同样错误。此时可以让客户端绕过类型校验
+	// if err := proto.Unmarshal(resp.Payload.Value, &res); err != nil {
+	// 	log.Fatal(err)
+	// }
+
 	fmt.Printf("res message:%s", res.Message)
 }

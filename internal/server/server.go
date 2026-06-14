@@ -65,7 +65,7 @@ func (s *BridgeServer) CallUnary(ctx context.Context, req *bridgev1.UnaryRequest
 
 	// 根据 target 找到对应的下游微服务节点
 	target, err := s.router.Route(ctx, routeCtx)
-	fmt.Printf("\ntarget: %v err: %v\n", target, err)
+	// fmt.Printf("\ntarget: %v err: %v\n", target, err)
 	if err != nil {
 		return &bridgev1.UnaryResponse{
 			Status: status.New(codes.Unavailable, fmt.Sprintf("routing failed: %v", err)).Proto(),
@@ -126,6 +126,7 @@ func toMetadataMD(m map[string]string) metadata.MD {
 	for k, v := range m {
 		md[k] = []string{v}
 	}
+
 	return md
 }
 
@@ -137,11 +138,12 @@ func mdToMap(md metadata.MD) map[string]string {
 			m[k] = v[0]
 		}
 	}
+
 	return m
 }
 
 // Health 健康检查
-func (s *BridgeServer) Health(ctx context.Context, req *bridgev1.HealthRequest) (*bridgev1.HealthResponse, error) {
+func (s *BridgeServer) Health(_ context.Context, req *bridgev1.HealthRequest) (*bridgev1.HealthResponse, error) {
 	return &bridgev1.HealthResponse{
 		Status: bridgev1.HealthResponse_SERVING,
 	}, nil

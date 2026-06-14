@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -70,7 +71,7 @@ func New(cfg *config.EtcdConfig) (*Router, error) {
 
 	prefix := strings.TrimPrefix(cfg.Prefix, "/")
 	prefix = strings.TrimSuffix(prefix, "/")
-	prefix = fmt.Sprintf("/%s/", prefix) // 格式：/services/
+	prefix = fmt.Sprintf("/%s", prefix) // 格式：/services
 	r := &Router{
 		client:   cli,
 		cache:    &sync.Map{},
@@ -103,10 +104,11 @@ func parseTarget(target string) (service, method, version string) {
 // Route 执行路由决策：根据 target 找到对应的下游微服务节点
 func (r *Router) Route(ctx context.Context, routeCtx RouteContext) (*RouteTarget, error) {
 	service, method, version := parseTarget(routeCtx.Target)
-	fmt.Printf("service: %v, version: %v, method: %v\n", service, version, method)
+	// fmt.Printf("service: %v, version: %v, method: %v\n", service, version, method)
 	key := r.serviceKey(service, version)
+	// key: /services/Hello.Greeter/v1
+	// fmt.Printf("key: %s", key)
 
-	fmt.Printf("key: %s", key)
 	// 1. 读本地缓存
 	val, ok := r.cache.Load(key)
 	if !ok {
@@ -119,7 +121,11 @@ func (r *Router) Route(ctx context.Context, routeCtx RouteContext) (*RouteTarget
 		val = endpoints
 	}
 
-	endpoints := val.([]Endpoint)
+	endpoints, ok := val.([]Endpoint)
+	if !ok {
+		return nil, errors.New("not found endpoints")
+	}
+
 	healthy := filterHealthy(endpoints)
 	if len(healthy) == 0 {
 		return nil, fmt.Errorf("no healthy endpoint for %s", routeCtx.Target)
@@ -138,64 +144,156 @@ func (r *Router) Route(ctx context.Context, routeCtx RouteContext) (*RouteTarget
 
 func (r *Router) serviceKey(service, version string) string {
 	if version == "" {
-		return fmt.Sprintf("%s%s/%s", r.prefix, service)
+		version = "_default"
 	}
 
-	return fmt.Sprintf("%s%s/%s", r.prefix, service, version)
+	return fmt.Sprintf("%s/%s/%s", r.prefix, service, version)
 }
 
+// parseEndpoint 解析 etcd value 中的单个 Endpoint，只保留健康节点。
+// registry.Register 写入的是单个 Endpoint 的 JSON，不是数组。
+func parseEndpoint(key string, value []byte) (Endpoint, bool) {
+	var ep Endpoint
+	if err := json.Unmarshal(value, &ep); err != nil {
+		log.Warn().Err(err).Str("key", key).Msg("unmarshal endpoint failed")
+		return Endpoint{}, false
+	}
+
+	if !ep.Healthy {
+		return Endpoint{}, false
+	}
+
+	return ep, true
+}
+
+// serviceVersionPrefix 返回某服务版本下的所有实例前缀：/services/{service}/{version}/
+func (r *Router) serviceVersionPrefix(service, version string) string {
+	if version == "" {
+		version = "_default"
+	}
+
+	return fmt.Sprintf("%s/%s/%s/", r.prefix, service, version)
+}
+
+// serviceVersionFromKey 从完整注册键 /services/{service}/{version}/{instanceID}
+// 中提取服务版本前缀 /services/{service}/{version}
+func (r *Router) serviceVersionFromKey(key string) string {
+	key = strings.TrimPrefix(key, r.prefix)
+	key = strings.Trim(key, "/")
+	parts := strings.Split(key, "/")
+	if len(parts) < 2 {
+		return ""
+	}
+
+	service := parts[0]
+	version := parts[1]
+	if version == "_default" {
+		version = ""
+	}
+
+	return r.serviceKey(service, version)
+}
+
+// 从etcd获取端点连接信息，只返回健康节点
 func (r *Router) lookupFromEtcd(ctx context.Context, service, version string) ([]Endpoint, error) {
-	key := r.serviceKey(service, version)
-	resp, err := r.client.Get(ctx, key)
+	prefix := r.serviceVersionPrefix(service, version)
+	resp, err := r.client.Get(ctx, prefix, clientv3.WithPrefix())
 	if err != nil {
 		return nil, err
 	}
 
 	var endpoints []Endpoint
 	for _, kv := range resp.Kvs {
-		var eps []Endpoint
-		if err := json.Unmarshal(kv.Value, &eps); err != nil {
-			log.Warn().Err(err).Str("key", string(kv.Key)).Msg("unmarshal endpoint failed")
-			continue
+		if ep, ok := parseEndpoint(string(kv.Key), kv.Value); ok {
+			endpoints = append(endpoints, ep)
 		}
-		endpoints = append(endpoints, eps...)
 	}
 
 	return endpoints, nil
 }
 
-// watch 持续监听 etcd 变更，增量更新本地缓存
+// refreshServiceCache 重新聚合某个服务版本下的所有健康实例并写入缓存。
+func (r *Router) refreshServiceCache(serviceVersionKey string) error {
+	parts := strings.Split(strings.Trim(serviceVersionKey, "/"), "/")
+	if len(parts) < 2 {
+		return nil
+	}
+
+	service := parts[len(parts)-2]
+	version := parts[len(parts)-1]
+	if service == "" {
+		return nil
+	}
+
+	endpoints, err := r.lookupFromEtcd(context.Background(), service, version)
+	if err != nil {
+		return err
+	}
+
+	if len(endpoints) > 0 {
+		r.cache.Store(serviceVersionKey, endpoints)
+	} else {
+		r.cache.Delete(serviceVersionKey)
+	}
+
+	return nil
+}
+
+// watch 持续监听 etcd 变更，只缓存健康节点；若某服务全部下线则剔除缓存
 func (r *Router) watch() {
 	watchChan := r.client.Watch(context.Background(), r.prefix, clientv3.WithPrefix())
-	for wresp := range watchChan {
-		for _, ev := range wresp.Events {
+	for resp := range watchChan {
+		for _, ev := range resp.Events {
+			serviceVersionKey := r.serviceVersionFromKey(string(ev.Kv.Key))
+			if serviceVersionKey == "" {
+				continue
+			}
+
 			switch ev.Type {
 			case clientv3.EventTypePut:
-				var eps []Endpoint
-				if err := json.Unmarshal(ev.Kv.Value, &eps); err != nil {
+				if _, ok := parseEndpoint(string(ev.Kv.Key), ev.Kv.Value); !ok {
+					r.cache.Delete(serviceVersionKey)
 					continue
 				}
-				r.cache.Store(string(ev.Kv.Key), eps)
+
+				if err := r.refreshServiceCache(serviceVersionKey); err != nil {
+					log.Warn().Err(err).Str("key", serviceVersionKey).Msg("refresh service cache failed")
+				}
 			case clientv3.EventTypeDelete:
-				r.cache.Delete(string(ev.Kv.Key))
+				if err := r.refreshServiceCache(serviceVersionKey); err != nil {
+					log.Warn().Err(err).Str("key", serviceVersionKey).Msg("refresh service cache failed")
+				}
 			}
 		}
 	}
 }
 
-// bootstrap 启动时全量加载 etcd 数据到本地缓存
+// bootstrap 启动时全量加载 etcd 数据到本地缓存，按服务版本聚合，只保留健康节点
 func (r *Router) bootstrap() error {
 	resp, err := r.client.Get(context.Background(), r.prefix, clientv3.WithPrefix())
 	if err != nil {
 		return err
 	}
+
+	groups := make(map[string][]Endpoint)
 	for _, kv := range resp.Kvs {
-		var eps []Endpoint
-		if err := json.Unmarshal(kv.Value, &eps); err != nil {
+		ep, ok := parseEndpoint(string(kv.Key), kv.Value)
+		if !ok {
 			continue
 		}
-		r.cache.Store(string(kv.Key), eps)
+
+		serviceVersionKey := r.serviceVersionFromKey(string(kv.Key))
+		if serviceVersionKey == "" {
+			continue
+		}
+
+		groups[serviceVersionKey] = append(groups[serviceVersionKey], ep)
 	}
+
+	for key, eps := range groups {
+		r.cache.Store(key, eps)
+	}
+
 	return nil
 }
 
@@ -206,5 +304,6 @@ func filterHealthy(endpoints []Endpoint) []Endpoint {
 			result = append(result, ep)
 		}
 	}
+
 	return result
 }
