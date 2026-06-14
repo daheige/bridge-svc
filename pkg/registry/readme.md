@@ -1,6 +1,6 @@
 # 服务注册与发现
 
-`pkg/registry` 提供基于 etcd 的服务注册、发现与 gRPC resolver 能力。
+`pkg/registry` 提供基于 etcd 的服务注册、发现与 gRPC resolver 能力。后续这个包，将独立到单个仓库中开源。
 
 ## 核心设计
 
