@@ -1,0 +1,94 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bridge-svc
+  namespace: infrastructure
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: bridge-svc
+  template:
+    metadata:
+      labels:
+        app: bridge-svc
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+    spec:
+      containers:
+        - name: bridge
+          image: your-registry/bridge-svc:v0.1.0
+          ports:
+            - containerPort: 50051
+              name: grpc        # 业务方通过此端口调用 Bridge（gRPC）
+            - containerPort: 9090
+              name: metrics     # Prometheus 指标端口
+          env:
+            - name: BRIDGE_SERVER_LISTEN_ADDR
+              value: "0.0.0.0:50051"
+            - name: BRIDGE_ETCD_ENDPOINTS
+              value: "etcd-0:2379,etcd-1:2379,etcd-2:2379"
+            - name: BRIDGE_OBSERVABILITY_TRACE_ENDPOINT
+              value: "otel-collector.monitoring:4317"
+            - name: GODEBUG
+              value: "madvdontneed=0"
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "500m"
+            limits:
+              memory: "2Gi"
+              cpu: "2000m"
+          livenessProbe:
+            grpc:
+              port: 50051
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            grpc:
+              port: 50051
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          volumeMounts:
+            - name: config
+              mountPath: /root/config
+      volumes:
+        - name: config
+          configMap:
+            name: bridge-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bridge-svc
+  namespace: infrastructure
+spec:
+  selector:
+    app: bridge-svc
+  ports:
+    - port: 50051
+      targetPort: 50051
+      name: grpc        # 业务方调用 Bridge 的 gRPC 端口
+    - port: 9090
+      targetPort: 9090
+      name: metrics     # Prometheus 指标端口
+  type: ClusterIP
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bridge-config
+  namespace: infrastructure
+data:
+  bridge.yaml: |
+    server:
+      listen_addr: "0.0.0.0:50051"
+      max_concurrent_streams: 1000
+    etcd:
+      endpoints:
+        - "etcd-0:2379"
+        - "etcd-1:2379"
+        - "etcd-2:2379"
+      prefix: "/services/"
+    # ... 其他配置

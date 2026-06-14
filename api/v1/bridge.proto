@@ -1,0 +1,102 @@
+syntax = "proto3";
+package bridge.v1;
+
+import "google/protobuf/any.proto";
+import "google/rpc/status.proto";
+
+option go_package = "github.com/daheige/bridge-svc/api/v1;bridgev1";
+
+// 自定义 Status 消息
+// 无需外部 googleapis 依赖
+
+// Bridge 对外暴露的统一 gRPC 调用接口
+// 业务方通过 gRPC 调用 Bridge，Bridge 负责转发到下游微服务
+service BridgeService {
+  // 一元调用：适用于大多数业务请求
+  rpc CallUnary(UnaryRequest) returns (UnaryResponse);
+
+  // 流式调用：适用于大数据量或实时推送场景（预留）
+  rpc CallStream(stream StreamRequest) returns (stream StreamResponse);
+
+  // 健康检查
+  rpc Health(HealthRequest) returns (HealthResponse);
+}
+
+// 统一请求模型
+// 业务方通过 gRPC 发送此请求，Bridge 解析 target 后路由到下游
+message UnaryRequest {
+  // 目标服务标识，格式: "PackageName.ServiceName/MethodName"
+  // 对应 gRPC 的 full method name，例如: "Hello.Greeter/SayHello"
+  // Bridge 解析后，使用 "PackageName.ServiceName" 作为 etcd 服务名，"MethodName" 作为方法名
+  string target = 1;
+
+  // 下游协议类型：GRPC / HTTP
+  // Bridge 根据此字段选择对应的协议处理器转发请求
+  string protocol = 2;
+
+  // 业务负载，使用 Any 实现零拷贝透传
+  // 业务方将原始 protobuf Message 打包为 Any，Bridge 不感知具体 Schema
+  google.protobuf.Any payload = 3;
+
+  // 调用元数据，透传给下游微服务（如 auth token、trace context、region 等）
+  map<string, string> metadata = 4;
+
+  // 超时配置（毫秒），覆盖全局默认值
+  // 控制 Bridge 到下游微服务的调用超时
+  uint32 timeout_ms = 5;
+
+  // 重试策略
+  RetryPolicy retry = 6;
+}
+
+message RetryPolicy {
+  uint32 max_attempts = 1;       // 最大重试次数
+  uint32 initial_backoff_ms = 2;   // 初始退避时间
+  float backoff_multiplier = 3;    // 退避乘数
+  repeated int32 retryable_codes = 4; // 可重试的 gRPC 状态码
+}
+
+message UnaryResponse {
+  // 成功响应负载（下游微服务返回的数据）
+  google.protobuf.Any payload = 1;
+
+  // 响应元数据（从下游微服务透传回来）
+  map<string, string> metadata = 2;
+
+  // 如果调用失败，使用自定义 Status 错误模型
+  // 包含路由失败、熔断打开、下游超时等错误
+  google.rpc.Status status = 3;
+
+  // 实际调用的下游微服务节点（用于调试和链路追踪）
+  string upstream_node = 4;
+
+  // 调用耗时（微秒），从 Bridge 接收到请求到返回响应的总时间
+  uint64 latency_us = 5;
+}
+
+message StreamRequest {
+  string target = 1;
+  string protocol = 2;
+  google.protobuf.Any payload = 3;
+  map<string, string> metadata = 4;
+}
+
+message StreamResponse {
+  google.protobuf.Any payload = 1;
+  map<string, string> metadata = 2;
+  google.rpc.Status status = 3;
+}
+
+message HealthRequest {
+  string service = 1; // 空则检查 Bridge 自身
+}
+
+message HealthResponse {
+  enum ServingStatus {
+    UNKNOWN = 0;
+    SERVING = 1;
+    NOT_SERVING = 2;
+  }
+  ServingStatus status = 1;
+  repeated string checked_services = 2;
+}

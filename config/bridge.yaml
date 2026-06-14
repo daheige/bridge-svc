@@ -1,0 +1,52 @@
+# Bridge 服务配置
+# 业务方通过 gRPC 调用 Bridge，Bridge 转发到下游微服务
+server:
+  listen_addr: "0.0.0.0:50052"       # gRPC 监听地址（业务方调用此端口）
+  max_concurrent_streams: 10000       # 最大并发流
+  keepalive_time: 7200s              # 连接保活时间
+  keepalive_timeout: 20s             # 保活超时
+
+# etcd配置
+etcd:
+  endpoints:                         # etcd 集群地址（服务发现）
+    - "http://127.0.0.1:12379"
+  dial_timeout: 5s                   # 连接超时
+  prefix: "/services/"               # 服务注册前缀
+
+# 协议配置
+protocols:
+  default_timeout: 30s             # Bridge 到下游的默认超时
+  grpc:
+    max_send_msg_size: 16777216    # 16MB（下游 gRPC 发送限制）
+    max_recv_msg_size: 16777216    # 16MB（下游 gRPC 接收限制）
+    dial_timeout: 10s               # 连接下游 gRPC 超时
+  http:
+    max_conns_per_host: 100        # 每下游主机最大连接数
+    read_timeout: 10s              # 下游 HTTP 读超时
+    write_timeout: 10s             # 下游 HTTP 写超时
+
+# 限流熔断
+resilience:
+  circuit_breaker:
+    max_requests: 3                # 半开状态最大请求数
+    interval: 10s                  # 统计周期
+    timeout: 30s                   # 熔断持续时间
+    failure_ratio: 0.6             # 触发熔断的失败率阈值
+    success_ratio: 0.5             # 恢复熔断的成功率阈值
+    half_open_max: 1               # 半开状态最大探测请求
+  rate_limiter:
+    rps: 10000                     # 每秒请求数（限流）
+    burst_size: 500                # 突发容量
+  retry:
+    max_attempts: 3                # 最大重试次数
+    initial_backoff: 100ms         # 初始退避时间
+    max_backoff: 5s                # 最大退避时间
+    backoff_multiplier: 2.0        # 退避乘数
+
+# 可观测性
+observability:
+  log_level: "info"                # 日志级别
+  trace_endpoint: "localhost:5081"  # OTLP Trace 接收端
+  metrics_port: 9090               # Prometheus 指标端口
+  service_name: "bridge-svc"   # 服务名
+  service_version: "v0.1.0"        # 服务版本
