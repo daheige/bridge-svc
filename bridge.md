@@ -1,8 +1,8 @@
 # 【go grpc bridge服务架构设计与实现】
 
-> **版本**: v3.0 (2026-06-13)  
-> **Go版本**: 1.24+  
-> **依赖更新**: 所有包升级至2026年最新稳定版本，修复已知CVE
+> **版本**: v3.1 (2026-06-14)  
+> **Go版本**: 1.25.8+  
+> **依赖更新**: 依赖版本与 `go.mod` 当前状态保持一致
 
 ---
 
@@ -45,7 +45,7 @@ graph TB
     end
 
     subgraph "Bridge Service (Go 1.24 + grpc-go v1.79)"
-        D[grpc_Server_50051]
+        D[grpc_Server_50052]
         E[Interceptor_Chain]
         F[Router_Engine]
         G[Protocol_Adapters]
@@ -126,18 +126,17 @@ sequenceDiagram
 
 | 组件 | 选型 | 版本 | 理由 |
 |------|------|------|------|
-| gRPC 框架 (对外) | `google.golang.org/grpc` | **v1.79.3+** | 修复 CVE-2026-33186 (Critical)，官方最新稳定版 |
-| gRPC 客户端 (对内) | `google.golang.org/grpc` | **v1.79.3+** | 同上，Bridge 作为客户端连接下游 gRPC |
-| Protobuf | `google.golang.org/protobuf` | **v1.36.0+** | 与 grpc-go v1.79 兼容的最新版本 |
-| etcd 客户端 | `go.etcd.io/etcd/client/v3` | **v3.5.21+** | 2026年最新稳定版，与 etcd 3.5.x 集群兼容 |
-| 熔断器 | `github.com/sony/gobreaker/v2` | **v2.4.0** | 2026年最新，支持 Go 1.24 |
-| 限流 | `golang.org/x/time/rate` | **v0.13.0+** | 标准扩展，Go 1.24 兼容 |
-| 可观测性 | `go.opentelemetry.io/otel` | **v1.43.0+** | 修复 CVE-2026-39882/39883，最新稳定版 |
-| 日志 | `github.com/rs/zerolog` | **v1.34.0+** | 2026年最新，零分配 JSON 日志 |
-| HTTP 客户端 | `github.com/go-resty/resty/v2` | **v2.16.0+** | 功能丰富的 HTTP 客户端，支持中间件、重试、拦截器 |
-| 配置 | `github.com/spf13/viper` | **v1.20.0+** | 2026年最新，支持热更新 |
-| Prometheus 客户端 | `github.com/prometheus/client_golang` | **v1.22.0+** | 2026年最新，支持新指标类型 |
-| Go 版本 | `Go` | **1.24+** | 2026年4月发布，支持新特性 |
+| gRPC 框架 | `google.golang.org/grpc` | **v1.81.1+** | 当前 go.mod 锁定版本 |
+| Protobuf | `google.golang.org/protobuf` | **v1.36.11+** | 与 grpc-go v1.81 兼容 |
+| etcd 客户端 | `go.etcd.io/etcd/client/v3` | **v3.6.12+** | 当前 go.mod 锁定版本 |
+| 熔断器 | `github.com/sony/gobreaker/v2` | **v2.4.0** | 支持泛型，按 endpoint 维度隔离 |
+| 限流 | `golang.org/x/time/rate` | **v0.12.0+** | 标准扩展 |
+| 可观测性 | `go.opentelemetry.io/otel` | **v1.44.0+** | OTLP Trace 导出 |
+| 日志 | `github.com/rs/zerolog` | **v1.35.1+** | 零分配 JSON 日志 |
+| HTTP 客户端 | `github.com/go-resty/resty/v2` | **v2.17.2+** | 支持中间件、重试、拦截器 |
+| 配置 | `github.com/spf13/viper` | **v1.21.0+** | 支持热更新 |
+| Prometheus 客户端 | `github.com/prometheus/client_golang` | **v1.20.5+** | 指标采集 |
+| Go 版本 | `Go` | **1.25.8+** | 当前 go.mod 声明版本 |
 
 ---
 
@@ -150,6 +149,8 @@ bridge-svc/
 │       ├── bridge.proto          # Bridge 对外 gRPC API 定义
 │       ├── bridge.pb.go          # protoc-gen-go 生成
 │       └── bridge_grpc.pb.go     # protoc-gen-go-grpc 生成
+├── client/
+│   └── main.go                   # 业务方调用 Bridge 的 Go 客户端示例
 ├── cmd/
 │   └── bridge/
 │       └── main.go               # 服务入口
@@ -159,14 +160,14 @@ bridge-svc/
 │   ├── server/
 │   │   └── server.go             # grpc.Server 组装 + BridgeService 实现
 │   ├── router/
-│   │   ├── router.go             # 路由决策
-│   │   ├── discovery.go          # etcd 服务发现
-│   │   ├── cache.go              # 本地缓存 + watch
+│   │   ├── router.go             # 路由决策（支持 service/method/version）
+│   │   ├── discovery.go          # （保留目录，实际发现逻辑在 router/registry）
+│   │   ├── cache.go              # （保留目录）
 │   │   └── balancer.go           # 加权轮询负载均衡
 │   ├── protocol/
 │   │   ├── protocol.go           # 协议处理器接口
-│   │   ├── grpc.go               # gRPC → gRPC 透传 (下游也是 gRPC)
-│   │   ├── http.go               # gRPC → HTTP 转换 (使用 resty/v2)
+│   │   ├── grpc.go               # gRPC → gRPC 透传（raw-bytes codec + reflection）
+│   │   └── http.go               # gRPC → HTTP 转换（使用 resty/v2）
 │   ├── resilience/
 │   │   ├── circuit.go            # 熔断器管理
 │   │   ├── retry.go              # 重试策略
@@ -176,21 +177,30 @@ bridge-svc/
 │   ├── observability/
 │   │   ├── tracing.go            # OpenTelemetry Trace
 │   │   ├── metrics.go            # Prometheus 指标
-│   │   └── logging.go            # zerolog 初始化
+│   │   ├── logging.go            # zerolog 初始化
+│   │   └── init.go               # 可观测性统一初始化
 │   └── middleware/
 │       ├── chain.go              # 拦截器链组装
-│       ├── auth.go               # 认证拦截器
+│       ├── auth.go               # 认证拦截器（占位）
 │       ├── recovery.go           # Panic 恢复
 │       ├── logging.go            # 日志拦截器
-│       └── timeout.go            # 超时拦截器
+│       └── timeout.go            # 超时拦截器（占位）
 ├── pkg/
+│   ├── registry/
+│   │   ├── registry.go           # etcd 服务注册器（带自动重注册）
+│   │   ├── discovery.go          # etcd 服务发现（Get + Watch）
+│   │   ├── resolver.go           # 自定义 gRPC resolver（scheme: etcd）
+│   │   └── readme.md             # 服务注册使用说明
 │   └── utils/
 │       └── any.go                # protobuf Any 工具函数
 ├── config/
 │   └── bridge.yaml               # 运行时配置
 ├── go.mod
 ├── go.sum
-└── Makefile
+├── Makefile
+├── Dockerfile
+└── k8s/
+    └── deployment.yaml           # Kubernetes 部署示例
 ```
 
 ---
@@ -327,44 +337,28 @@ protoc \
 ```go
 module github.com/daheige/bridge-svc
 
-go 1.24
+go 1.25.8
 
 require (
-    // gRPC 核心（2026年最新，修复 CVE-2026-33186）
-    google.golang.org/grpc v1.79.3
-    google.golang.org/protobuf v1.36.0
-    google.golang.org/genproto/googleapis/rpc v0.0.0-20250609180819-5d3f8f7b8b8b
+    google.golang.org/grpc v1.81.1
+    google.golang.org/protobuf v1.36.11
+    google.golang.org/genproto/googleapis/rpc v0.0.0-20260610212136-7ab31c22f7ad
 
-    // etcd 客户端（2026年最新稳定版）
-    go.etcd.io/etcd/client/v3 v3.5.21
+    go.etcd.io/etcd/client/v3 v3.6.12
 
-    // OpenTelemetry（2026年最新，修复 CVE-2026-39882/39883）
-    go.opentelemetry.io/otel v1.43.0
-    go.opentelemetry.io/otel/sdk v1.43.0
-    go.opentelemetry.io/otel/trace v1.43.0
-    go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.43.0
-    go.opentelemetry.io/otel/exporters/prometheus v0.56.0
+    go.opentelemetry.io/otel v1.44.0
+    go.opentelemetry.io/otel/sdk v1.44.0
+    go.opentelemetry.io/otel/trace v1.44.0
+    go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.44.0
 
-    // 熔断器（2026年最新 v2.4.0）
     github.com/sony/gobreaker/v2 v2.4.0
-
-    // 日志（2026年最新）
-    github.com/rs/zerolog v1.34.0
-
-    // 配置管理（2026年最新）
-    github.com/spf13/viper v1.20.0
-
-    // HTTP 客户端（功能丰富的 REST 客户端）
-    github.com/go-resty/resty/v2 v2.16.0
-
-    // Prometheus 客户端（2026年最新）
-    github.com/prometheus/client_golang v1.22.0
-
-    // 限流（Go 1.24 兼容）
-    golang.org/x/time v0.13.0
-
-    // 工具库
+    github.com/rs/zerolog v1.35.1
+    github.com/spf13/viper v1.21.0
+    github.com/go-resty/resty/v2 v2.17.2
+    github.com/prometheus/client_golang v1.20.5
+    golang.org/x/time v0.12.0
     github.com/google/uuid v1.6.0
+    github.com/fsnotify/fsnotify v1.10.1
 )
 ```
 
@@ -523,6 +517,7 @@ package router
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -530,15 +525,16 @@ import (
 	"github.com/rs/zerolog/log"
 	"go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc/metadata"
+
+	"github.com/daheige/bridge-svc/internal/config"
 )
 
 // ProtocolType 下游微服务协议类型
 type ProtocolType string
 
 const (
-	ProtocolGRPC   ProtocolType = "GRPC"   // 下游是 gRPC 服务
-	ProtocolHTTP   ProtocolType = "HTTP"   // 下游是 HTTP/REST 服务
-	 
+	ProtocolGRPC ProtocolType = "GRPC" // 下游是 gRPC 服务
+	ProtocolHTTP ProtocolType = "HTTP" // 下游是 HTTP/REST 服务
 )
 
 // Endpoint 下游微服务节点
@@ -553,7 +549,7 @@ type Endpoint struct {
 
 // RouteContext 路由上下文（从业务方请求中提取）
 type RouteContext struct {
-	Target       string       // 目标服务路径，如 "order_service/CreateOrder"
+	Target       string       // 目标服务路径，如 "order_service/CreateOrder" 或 "order_service/CreateOrder/v2"
 	Protocol     ProtocolType // 协议类型
 	Metadata     metadata.MD  // 元数据，透传给下游
 	PreferRegion string       // 优先区域
@@ -562,8 +558,9 @@ type RouteContext struct {
 
 // RouteTarget 路由结果（选中的下游微服务节点）
 type RouteTarget struct {
-	ServiceName string   // 服务名，如 "Hello.Greeter"（gRPC full method name 的 service 部分）
-	MethodName  string   // 方法名，如 "SayHello"
+	ServiceName string   // 服务名，如 "order_service"
+	MethodName  string   // 方法名，如 "CreateOrder"
+	Version     string   // 版本号，如 "v2"
 	Endpoint    Endpoint // 选中的节点
 }
 
@@ -576,7 +573,7 @@ type Router struct {
 }
 
 // New 创建路由引擎，初始化 etcd 连接并启动 watch
-func New(cfg *EtcdConfig) (*Router, error) {
+func New(cfg *config.EtcdConfig) (*Router, error) {
 	cli, err := clientv3.New(clientv3.Config{
 		Endpoints:   cfg.Endpoints,
 		DialTimeout: cfg.DialTimeout,
@@ -585,11 +582,15 @@ func New(cfg *EtcdConfig) (*Router, error) {
 		return nil, fmt.Errorf("etcd connect: %w", err)
 	}
 
+	prefix := strings.TrimPrefix(cfg.Prefix, "/")
+	prefix = strings.TrimSuffix(prefix, "/")
+	prefix = fmt.Sprintf("/%s", prefix) // 格式：/services
+
 	r := &Router{
 		client:   cli,
 		cache:    &sync.Map{},
 		balancer: NewWeightedRoundRobin(),
-		prefix:   cfg.Prefix,
+		prefix:   prefix,
 	}
 
 	// 启动全量加载 + watch
@@ -601,23 +602,23 @@ func New(cfg *EtcdConfig) (*Router, error) {
 	return r, nil
 }
 
-// parseTarget 解析 gRPC full method name
-// 格式: "PackageName.ServiceName/MethodName"
-// 例如: "Hello.Greeter/SayHello" → service="Hello.Greeter", method="SayHello"
-// etcd 中的服务名就是 "PackageName.ServiceName"（如 "Hello.Greeter"）
-func parseTarget(target string) (service, method string) {
+// parseTarget 解析 "service/method" 或 "service/method/version"
+func parseTarget(target string) (service, method, version string) {
 	parts := strings.Split(target, "/")
-	if len(parts) == 2 {
-		return parts[0], parts[1] // service="Hello.Greeter", method="SayHello"
+	switch len(parts) {
+	case 2:
+		return parts[0], parts[1], ""
+	case 3:
+		return parts[0], parts[1], parts[2]
+	default:
+		return target, "", ""
 	}
-	return target, ""
 }
 
 // Route 执行路由决策：根据 target 找到对应的下游微服务节点
 func (r *Router) Route(ctx context.Context, routeCtx RouteContext) (*RouteTarget, error) {
-
-	service, method := parseTarget(routeCtx.Target)
-	key := r.serviceKey(service)
+	service, method, version := parseTarget(routeCtx.Target)
+	key := r.serviceKey(service, version)
 
 	// 1. 读本地缓存
 	val, ok := r.cache.Load(key)
@@ -631,7 +632,11 @@ func (r *Router) Route(ctx context.Context, routeCtx RouteContext) (*RouteTarget
 		val = endpoints
 	}
 
-	endpoints := val.([]Endpoint)
+	endpoints, ok := val.([]Endpoint)
+	if !ok {
+		return nil, errors.New("not found endpoints")
+	}
+
 	healthy := filterHealthy(endpoints)
 	if len(healthy) == 0 {
 		return nil, fmt.Errorf("no healthy endpoint for %s", routeCtx.Target)
@@ -643,66 +648,156 @@ func (r *Router) Route(ctx context.Context, routeCtx RouteContext) (*RouteTarget
 	return &RouteTarget{
 		ServiceName: service,
 		MethodName:  method,
+		Version:     version,
 		Endpoint:    selected,
 	}, nil
 }
 
-func (r *Router) serviceKey(service string) string {
-	return fmt.Sprintf("%s%s/default", r.prefix, service)
+func (r *Router) serviceKey(service, version string) string {
+	if version == "" {
+		version = "_default"
+	}
+	return fmt.Sprintf("%s/%s/%s", r.prefix, service, version)
 }
 
-func (r *Router) lookupFromEtcd(ctx context.Context, service string) ([]Endpoint, error) {
-	key := r.serviceKey(service)
-	resp, err := r.client.Get(ctx, key)
+// parseEndpoint 解析 etcd value 中的单个 Endpoint，只保留健康节点。
+// registry.Register 写入的是单个 Endpoint 的 JSON，不是数组。
+func parseEndpoint(key string, value []byte) (Endpoint, bool) {
+	var ep Endpoint
+	if err := json.Unmarshal(value, &ep); err != nil {
+		log.Warn().Err(err).Str("key", key).Msg("unmarshal endpoint failed")
+		return Endpoint{}, false
+	}
+	if !ep.Healthy {
+		return Endpoint{}, false
+	}
+	return ep, true
+}
+
+// serviceVersionPrefix 返回某服务版本下的所有实例前缀：/services/{service}/{version}/
+func (r *Router) serviceVersionPrefix(service, version string) string {
+	if version == "" {
+		version = "_default"
+	}
+	return fmt.Sprintf("%s/%s/%s/", r.prefix, service, version)
+}
+
+// serviceVersionFromKey 从完整注册键 /services/{service}/{version}/{instanceID}
+// 中提取服务版本前缀 /services/{service}/{version}
+func (r *Router) serviceVersionFromKey(key string) string {
+	key = strings.TrimPrefix(key, r.prefix)
+	key = strings.Trim(key, "/")
+	parts := strings.Split(key, "/")
+	if len(parts) < 2 {
+		return ""
+	}
+	service := parts[0]
+	version := parts[1]
+	if version == "_default" {
+		version = ""
+	}
+	return r.serviceKey(service, version)
+}
+
+// 从etcd获取端点连接信息，只返回健康节点
+func (r *Router) lookupFromEtcd(ctx context.Context, service, version string) ([]Endpoint, error) {
+	prefix := r.serviceVersionPrefix(service, version)
+	resp, err := r.client.Get(ctx, prefix, clientv3.WithPrefix())
 	if err != nil {
 		return nil, err
 	}
 
 	var endpoints []Endpoint
 	for _, kv := range resp.Kvs {
-		var eps []Endpoint
-		if err := json.Unmarshal(kv.Value, &eps); err != nil {
-			log.Warn().Err(err).Str("key", string(kv.Key)).Msg("unmarshal endpoint failed")
-			continue
+		if ep, ok := parseEndpoint(string(kv.Key), kv.Value); ok {
+			endpoints = append(endpoints, ep)
 		}
-		endpoints = append(endpoints, eps...)
 	}
 
 	return endpoints, nil
 }
 
-// watch 持续监听 etcd 变更，增量更新本地缓存
+// refreshServiceCache 重新聚合某个服务版本下的所有健康实例并写入缓存。
+func (r *Router) refreshServiceCache(serviceVersionKey string) error {
+	parts := strings.Split(strings.Trim(serviceVersionKey, "/"), "/")
+	if len(parts) < 2 {
+		return nil
+	}
+
+	service := parts[len(parts)-2]
+	version := parts[len(parts)-1]
+	if service == "" {
+		return nil
+	}
+
+	endpoints, err := r.lookupFromEtcd(context.Background(), service, version)
+	if err != nil {
+		return err
+	}
+
+	if len(endpoints) > 0 {
+		r.cache.Store(serviceVersionKey, endpoints)
+	} else {
+		r.cache.Delete(serviceVersionKey)
+	}
+
+	return nil
+}
+
+// watch 持续监听 etcd 变更，只缓存健康节点；若某服务全部下线则剔除缓存
 func (r *Router) watch() {
 	watchChan := r.client.Watch(context.Background(), r.prefix, clientv3.WithPrefix())
-	for wresp := range watchChan {
-		for _, ev := range wresp.Events {
+	for resp := range watchChan {
+		for _, ev := range resp.Events {
+			serviceVersionKey := r.serviceVersionFromKey(string(ev.Kv.Key))
+			if serviceVersionKey == "" {
+				continue
+			}
+
 			switch ev.Type {
 			case clientv3.EventTypePut:
-				var eps []Endpoint
-				if err := json.Unmarshal(ev.Kv.Value, &eps); err != nil {
+				if _, ok := parseEndpoint(string(ev.Kv.Key), ev.Kv.Value); !ok {
+					r.cache.Delete(serviceVersionKey)
 					continue
 				}
-				r.cache.Store(string(ev.Kv.Key), eps)
+				if err := r.refreshServiceCache(serviceVersionKey); err != nil {
+					log.Warn().Err(err).Str("key", serviceVersionKey).Msg("refresh service cache failed")
+				}
 			case clientv3.EventTypeDelete:
-				r.cache.Delete(string(ev.Kv.Key))
+				if err := r.refreshServiceCache(serviceVersionKey); err != nil {
+					log.Warn().Err(err).Str("key", serviceVersionKey).Msg("refresh service cache failed")
+				}
 			}
 		}
 	}
 }
 
-// bootstrap 启动时全量加载 etcd 数据到本地缓存
+// bootstrap 启动时全量加载 etcd 数据到本地缓存，按服务版本聚合，只保留健康节点
 func (r *Router) bootstrap() error {
 	resp, err := r.client.Get(context.Background(), r.prefix, clientv3.WithPrefix())
 	if err != nil {
 		return err
 	}
+
+	groups := make(map[string][]Endpoint)
 	for _, kv := range resp.Kvs {
-		var eps []Endpoint
-		if err := json.Unmarshal(kv.Value, &eps); err != nil {
+		ep, ok := parseEndpoint(string(kv.Key), kv.Value)
+		if !ok {
 			continue
 		}
-		r.cache.Store(string(kv.Key), eps)
+
+		serviceVersionKey := r.serviceVersionFromKey(string(kv.Key))
+		if serviceVersionKey == "" {
+			continue
+		}
+
+		groups[serviceVersionKey] = append(groups[serviceVersionKey], ep)
 	}
+
+	for key, eps := range groups {
+		r.cache.Store(key, eps)
+	}
+
 	return nil
 }
 
@@ -808,7 +903,7 @@ func Factory(protocol router.ProtocolType) Handler {
 		return NewGRPCHandler() // 下游是 gRPC 服务
 	case router.ProtocolHTTP:
 		return NewHTTPHandler() // 下游是 HTTP 服务
-		default:
+	default:
 		return nil
 	}
 }
@@ -822,26 +917,35 @@ package protocol
 import (
 	"context"
 	"fmt"
+	"log"
+	"strings"
+	"sync"
 	"time"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/descriptorpb"
+	"google.golang.org/protobuf/types/known/anypb"
 
 	"github.com/daheige/bridge-svc/internal/pool"
 	"github.com/daheige/bridge-svc/internal/router"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/metadata"
-	"google.golang.org/protobuf/types/known/anypb"
 )
 
 // GRPCHandler gRPC 协议透传处理器
 // 业务方 -> Bridge(gRPC) -> 下游 gRPC 微服务
 // 此 Handler 负责将 Bridge 接收到的 gRPC 请求转发到下游 gRPC 服务
 type GRPCHandler struct {
-	pool *pool.GRPCPool // gRPC 连接池，复用到下游的连接
+	pool      *pool.GRPCPool
+	typeCache *methodTypeCache
 }
 
 // NewGRPCHandler 创建 gRPC 处理器
 func NewGRPCHandler() *GRPCHandler {
 	return &GRPCHandler{
-		pool: pool.NewGRPCPool(),
+		pool:      pool.NewGRPCPool(),
+		typeCache: globalMethodTypeCache,
 	}
 }
 
@@ -849,8 +953,9 @@ func NewGRPCHandler() *GRPCHandler {
 // 1. 从连接池获取到下游 gRPC 服务的连接
 // 2. 构建 gRPC 方法路径（/PackageName.ServiceName/MethodName）
 // 3. 透传 metadata（trace context、auth token 等）
-// 4. 使用 *anypb.Any 透传 payload，Bridge 不感知具体业务类型
-// 5. 调用下游服务并返回响应
+// 4. 使用 rawBytesCodec 透传 payload，Bridge 不反序列化业务消息
+// 5. 通过 gRPC reflection 获取下游方法输出类型，填充响应 anypb.Any 的 TypeUrl
+// 6. 调用下游服务并返回响应
 func (h *GRPCHandler) Call(ctx context.Context, target *router.RouteTarget, payload *anypb.Any, md metadata.MD, timeout time.Duration) (*Response, error) {
 	start := time.Now()
 
@@ -862,9 +967,11 @@ func (h *GRPCHandler) Call(ctx context.Context, target *router.RouteTarget, payl
 	defer h.pool.Put(conn)
 
 	// 2. 构建 gRPC 方法路径（full method name）
-	// target.ServiceName 已经是 "PackageName.ServiceName" 格式
-	// target.MethodName 是 "MethodName"
-	method := fmt.Sprintf("/%s/%s", target.ServiceName, target.MethodName)
+	service := strings.TrimPrefix(target.ServiceName, "/")
+	service = strings.TrimSuffix(service, "/")
+	method := fmt.Sprintf("/%s/%s", service, target.MethodName)
+
+	log.Println("call method:", method)
 
 	// 3. 透传 metadata 到下游（包含 trace context、auth token 等）
 	ctx = metadata.NewOutgoingContext(ctx, md)
@@ -873,11 +980,12 @@ func (h *GRPCHandler) Call(ctx context.Context, target *router.RouteTarget, payl
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// 5. 使用 *anypb.Any 透传业务消息
-	// Bridge 不感知具体的业务类型，直接透传 Any 到下游
-	// 下游服务会根据自己的 proto 定义解析 Any 中的 Value
-	var resp anypb.Any
-	err = conn.Invoke(ctx, method, payload, &resp)
+	// 5. 使用 rawBytesCodec 透传业务消息
+	// Bridge 不感知具体的业务类型，直接透传 Any 的 Value 字节到下游
+	reqBytes := payload.GetValue()
+
+	var respBytes []byte
+	err = conn.Invoke(ctx, method, reqBytes, &respBytes, grpc.ForceCodec(&rawBytesCodec{}))
 
 	latency := uint64(time.Since(start).Microseconds())
 
@@ -885,11 +993,168 @@ func (h *GRPCHandler) Call(ctx context.Context, target *router.RouteTarget, payl
 		return nil, fmt.Errorf("invoke downstream %s: %w", method, err)
 	}
 
+	// 6. 将原始字节包装回 anypb.Any，并通过 gRPC reflection 获取输出类型填充 TypeUrl
+	// TypeUrl 用于客户端调用 anypb.Any.UnmarshalTo 时进行类型校验
+	respAny := &anypb.Any{
+		Value: respBytes,
+	}
+	reflectCtx, reflectCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer reflectCancel()
+	outputType, typeErr := h.typeCache.getOutputType(reflectCtx, conn, target.Endpoint.Address, method)
+	if typeErr != nil {
+		log.Printf("warn: failed to get output type via reflection for %s: %v", method, typeErr)
+	} else if outputType != "" {
+		respAny.TypeUrl = "type.googleapis.com/" + outputType
+	}
+
 	return &Response{
-		Payload:   &resp,
+		Payload:   respAny,
 		Metadata:  metadata.MD{}, // 可从 response trailer 提取
 		LatencyUs: latency,
 	}, nil
+}
+
+// rawBytes 是原始字节的别名，用于 codec 透传
+type rawBytes []byte
+
+// rawBytesCodec 实现 grpc.Codec，直接透传原始字节流
+// 避免 Bridge 对业务消息进行 protobuf 序列化/反序列化
+type rawBytesCodec struct{}
+
+func (c *rawBytesCodec) Marshal(v interface{}) ([]byte, error) {
+	switch msg := v.(type) {
+	case rawBytes:
+		return msg, nil
+	case []byte:
+		return msg, nil
+	case *anypb.Any:
+		return msg.Value, nil
+	case proto.Message:
+		return proto.Marshal(msg)
+	default:
+		return nil, fmt.Errorf("unsupported type: %T", v)
+	}
+}
+
+func (c *rawBytesCodec) Unmarshal(data []byte, v interface{}) error {
+	switch msg := v.(type) {
+	case *rawBytes:
+		*msg = data
+		return nil
+	case *[]byte:
+		*msg = data
+		return nil
+	case *anypb.Any:
+		// 关键修正：只填充 Value，不碰 TypeUrl
+		// 避免 "mismatched message type" 错误
+		msg.Value = data
+		return nil
+	case proto.Message:
+		return proto.Unmarshal(data, msg)
+	default:
+		return fmt.Errorf("unsupported type: %T", v)
+	}
+}
+
+func (c *rawBytesCodec) Name() string {
+	return "raw-bytes"
+}
+
+// globalMethodTypeCache 全局方法输出类型缓存
+// 用于避免每次请求都进行 gRPC reflection 查询
+var globalMethodTypeCache = newMethodTypeCache()
+
+// methodTypeCache 缓存下游 gRPC 方法的输出类型全名
+// key: addr + method, value: proto 全名（如 Hello.HelloReply）
+type methodTypeCache struct {
+	mu sync.RWMutex
+	m  map[string]string
+}
+
+func newMethodTypeCache() *methodTypeCache {
+	return &methodTypeCache{m: make(map[string]string)}
+}
+
+func (c *methodTypeCache) getOutputType(ctx context.Context, conn *grpc.ClientConn, addr, method string) (string, error) {
+	key := addr + method
+
+	c.mu.RLock()
+	if t, ok := c.m[key]; ok {
+		c.mu.RUnlock()
+		return t, nil
+	}
+	c.mu.RUnlock()
+
+	t, err := queryOutputType(ctx, conn, method)
+	if err != nil {
+		return "", err
+	}
+
+	c.mu.Lock()
+	c.m[key] = t
+	c.mu.Unlock()
+	return t, nil
+}
+
+// queryOutputType 通过 gRPC reflection 查询指定方法的输出消息类型全名
+// method 格式: /PackageName.ServiceName/MethodName，如 /Hello.Greeter/SayHello
+func queryOutputType(ctx context.Context, conn *grpc.ClientConn, method string) (string, error) {
+	parts := strings.Split(method, "/")
+	if len(parts) != 3 || parts[1] == "" || parts[2] == "" {
+		return "", fmt.Errorf("invalid method format: %s", method)
+	}
+	serviceName := parts[1]
+	methodName := parts[2]
+
+	client := grpc_reflection_v1alpha.NewServerReflectionClient(conn)
+	stream, err := client.ServerReflectionInfo(ctx)
+	if err != nil {
+		return "", fmt.Errorf("create reflection stream: %w", err)
+	}
+	defer stream.CloseSend()
+
+	req := &grpc_reflection_v1alpha.ServerReflectionRequest{
+		MessageRequest: &grpc_reflection_v1alpha.ServerReflectionRequest_FileContainingSymbol{
+			FileContainingSymbol: serviceName,
+		},
+	}
+	if err := stream.Send(req); err != nil {
+		return "", fmt.Errorf("send reflection request: %w", err)
+	}
+
+	resp, err := stream.Recv()
+	if err != nil {
+		return "", fmt.Errorf("recv reflection response: %w", err)
+	}
+
+	fds := resp.GetFileDescriptorResponse().GetFileDescriptorProto()
+	if len(fds) == 0 {
+		return "", fmt.Errorf("empty file descriptor response")
+	}
+
+	var fdp descriptorpb.FileDescriptorProto
+	if err := proto.Unmarshal(fds[0], &fdp); err != nil {
+		return "", fmt.Errorf("unmarshal file descriptor: %w", err)
+	}
+
+	// 服务短名（如 Hello.Greeter -> Greeter）
+	shortName := serviceName
+	if idx := strings.LastIndex(serviceName, "."); idx >= 0 {
+		shortName = serviceName[idx+1:]
+	}
+
+	for _, svc := range fdp.Service {
+		if svc.GetName() != shortName {
+			continue
+		}
+		for _, m := range svc.Method {
+			if m.GetName() == methodName {
+				return strings.TrimPrefix(m.GetOutputType(), "."), nil
+			}
+		}
+	}
+
+	return "", fmt.Errorf("method %s/%s not found in descriptor", serviceName, methodName)
 }
 ```
 
@@ -938,7 +1203,9 @@ func (h *HTTPHandler) Call(ctx context.Context, target *router.RouteTarget, payl
 	start := time.Now()
 
 	// 构建请求 URL: http://host:port/service_name/method_name
-	url := fmt.Sprintf("http://%s/%s/%s", target.Endpoint.Address, target.ServiceName, target.MethodName)
+	service := strings.TrimPrefix(target.ServiceName, "/")
+	service = strings.TrimSuffix(service, "/")
+	url := fmt.Sprintf("http://%s/%s/%s", target.Endpoint.Address, service, target.MethodName)
 
 	// 创建带上下文的请求
 	req := h.client.R().SetContext(ctx)
@@ -1594,6 +1861,216 @@ func UnmarshalFromAny(any *anypb.Any, dst proto.Message) error {
 }
 ```
 
+### 4.21 `pkg/registry/discovery.go`
+
+`Discovery` 接口提供基于 etcd 的服务发现能力，支持一次性 `Get` 和持续 `Watch`。
+
+```go
+package registry
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"sync"
+	"time"
+
+	"go.etcd.io/etcd/api/v3/mvccpb"
+	"go.etcd.io/etcd/client/v3"
+)
+
+// Discovery 服务发现接口。
+type Discovery interface {
+	Get(ctx context.Context, service, version string) ([]Endpoint, error)
+	Watch(ctx context.Context, service, version string) (Watcher, error)
+}
+
+// Watcher 服务发现监听器。
+type Watcher interface {
+	Next() ([]Endpoint, error)
+	Stop()
+}
+
+// etcdDiscovery 基于 etcd 的服务发现实现。
+type etcdDiscovery struct {
+	client  *clientv3.Client
+	prefix  string
+	timeout time.Duration
+}
+
+// NewEtcdDiscovery 创建 etcd 服务发现器。
+func NewEtcdDiscovery(etcdEndpoints []string, prefix string, timeout time.Duration) (Discovery, error) {
+	if timeout <= 0 {
+		timeout = DefaultEtcdTimeout
+	}
+
+	cli, err := clientv3.New(clientv3.Config{
+		Endpoints:   etcdEndpoints,
+		DialTimeout: timeout,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if prefix == "" {
+		prefix = "/services"
+	}
+	prefix = strings.TrimPrefix(prefix, "/")
+	prefix = strings.TrimSuffix(prefix, "/")
+	prefix = fmt.Sprintf("/%s", prefix)
+
+	return &etcdDiscovery{
+		client:  cli,
+		prefix:  prefix,
+		timeout: timeout,
+	}, nil
+}
+
+func (d *etcdDiscovery) Get(ctx context.Context, service, version string) ([]Endpoint, error) {
+	prefix := d.servicePrefix(service, version)
+
+	ctx, cancel := context.WithTimeout(ctx, d.timeout)
+	defer cancel()
+
+	resp, err := d.client.Get(ctx, prefix, clientv3.WithPrefix())
+	if err != nil {
+		return nil, fmt.Errorf("etcd get failed: %w", err)
+	}
+
+	return parseEndpoints(resp.Kvs), nil
+}
+
+func (d *etcdDiscovery) Watch(ctx context.Context, service, version string) (Watcher, error) {
+	prefix := d.servicePrefix(service, version)
+
+	w := &etcdWatcher{
+		ch:     make(chan []Endpoint, 1),
+		stopCh: make(chan struct{}),
+	}
+
+	endpoints, err := d.Get(ctx, service, version)
+	if err != nil {
+		return nil, err
+	}
+	w.ch <- endpoints
+
+	watchCtx, cancel := context.WithCancel(ctx)
+	w.cancel = cancel
+
+	go func() {
+		defer close(w.ch)
+		watchCh := d.client.Watch(watchCtx, prefix, clientv3.WithPrefix())
+		for {
+			select {
+			case <-w.stopCh:
+				return
+			case resp, ok := <-watchCh:
+				if !ok {
+					return
+				}
+				if resp.Err() != nil {
+					continue
+				}
+				endpoints, err := d.Get(watchCtx, service, version)
+				if err != nil {
+					continue
+				}
+				if !w.push(endpoints) {
+					return
+				}
+			}
+		}
+	}()
+
+	return w, nil
+}
+
+func (d *etcdDiscovery) servicePrefix(service, version string) string {
+	if version == "" {
+		version = "_default"
+	}
+	return fmt.Sprintf("%s/%s/%s/", d.prefix, service, version)
+}
+
+func parseEndpoints(kvs []*mvccpb.KeyValue) []Endpoint {
+	seen := make(map[string]struct{})
+	var endpoints []Endpoint
+	for _, kv := range kvs {
+		var ep Endpoint
+		if err := json.Unmarshal(kv.Value, &ep); err != nil {
+			continue
+		}
+		if ep.Address == "" {
+			continue
+		}
+		if _, ok := seen[ep.Address]; ok {
+			continue
+		}
+		seen[ep.Address] = struct{}{}
+		endpoints = append(endpoints, ep)
+	}
+	return endpoints
+}
+```
+
+### 4.22 `pkg/registry/resolver.go`
+
+基于 `Discovery` 实现自定义 gRPC resolver，业务方可以通过 `etcd:///` scheme 直接访问 etcd 发现的服务。
+
+```go
+package registry
+
+import (
+	"context"
+	"log"
+	"strings"
+	"sync"
+
+	"google.golang.org/grpc/resolver"
+)
+
+const defaultScheme = "etcd"
+
+// NewEtcdResolverBuilder 创建 gRPC resolver builder。
+func NewEtcdResolverBuilder(discovery Discovery, scheme string) resolver.Builder {
+	if scheme == "" {
+		scheme = defaultScheme
+	}
+	return &etcdResolverBuilder{
+		discovery: discovery,
+		scheme:    scheme,
+	}
+}
+
+// RegisterEtcdResolver 使用指定 Discovery 注册 etcd gRPC resolver。
+func RegisterEtcdResolver(discovery Discovery, scheme string) {
+	resolver.Register(NewEtcdResolverBuilder(discovery, scheme))
+}
+```
+
+使用示例：
+
+```go
+discovery, err := registry.NewEtcdDiscovery(
+	[]string{"127.0.0.1:2379"},
+	"/services",
+	5*time.Second,
+)
+if err != nil {
+	log.Fatal(err)
+}
+
+// scheme 默认为 "etcd"
+registry.RegisterEtcdResolver(discovery, "")
+
+conn, err := grpc.NewClient(
+	"etcd:///Hello.Greeter/v1",
+	grpc.WithDefaultServiceConfig(`{"loadBalancingConfig": [{"round_robin":{}}]}`),
+	grpc.WithTransportCredentials(insecure.NewCredentials()),
+)
+```
+
 ---
 
 ## 5. 服务入口与启动
@@ -1605,6 +2082,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -1700,7 +2178,7 @@ func (s *BridgeServer) CallUnary(ctx context.Context, req *bridgev1.UnaryRequest
 
 	if err != nil {
 		statusCode := codes.Unavailable
-		if err == resilience.ErrCircuitOpen {
+		if errors.Is(err, resilience.ErrCircuitOpen) {
 			statusCode = codes.Unavailable
 		}
 
@@ -1726,6 +2204,7 @@ func toMetadataMD(m map[string]string) metadata.MD {
 	for k, v := range m {
 		md[k] = []string{v}
 	}
+
 	return md
 }
 
@@ -1737,11 +2216,12 @@ func mdToMap(md metadata.MD) map[string]string {
 			m[k] = v[0]
 		}
 	}
+
 	return m
 }
 
 // Health 健康检查
-func (s *BridgeServer) Health(ctx context.Context, req *bridgev1.HealthRequest) (*bridgev1.HealthResponse, error) {
+func (s *BridgeServer) Health(_ context.Context, req *bridgev1.HealthRequest) (*bridgev1.HealthResponse, error) {
 	return &bridgev1.HealthResponse{
 		Status: bridgev1.HealthResponse_SERVING,
 	}, nil
@@ -1858,30 +2338,31 @@ func main() {
 # 业务方通过 gRPC 调用 Bridge，Bridge 转发到下游微服务
 
 server:
-  listen_addr: "0.0.0.0:50051"      # gRPC 监听地址（业务方调用此端口）
-  max_concurrent_streams: 1000       # 最大并发流
+  listen_addr: "0.0.0.0:50052"       # gRPC 监听地址（业务方调用此端口）
+  max_concurrent_streams: 10000       # 最大并发流
   keepalive_time: 7200s              # 连接保活时间
   keepalive_timeout: 20s             # 保活超时
 
+# etcd配置
 etcd:
   endpoints:                         # etcd 集群地址（服务发现）
-    - "etcd-0:2379"
-    - "etcd-1:2379"
-    - "etcd-2:2379"
+    - "http://127.0.0.1:12379"
   dial_timeout: 5s                   # 连接超时
-  prefix: "/services/"             # 服务注册前缀
+  prefix: "/services/"               # 服务注册前缀
 
+# 协议配置
 protocols:
   default_timeout: 30s             # Bridge 到下游的默认超时
   grpc:
     max_send_msg_size: 16777216    # 16MB（下游 gRPC 发送限制）
     max_recv_msg_size: 16777216    # 16MB（下游 gRPC 接收限制）
-    dial_timeout: 5s               # 连接下游 gRPC 超时
+    dial_timeout: 10s               # 连接下游 gRPC 超时
   http:
     max_conns_per_host: 100        # 每下游主机最大连接数
     read_timeout: 10s              # 下游 HTTP 读超时
     write_timeout: 10s             # 下游 HTTP 写超时
 
+# 限流熔断
 resilience:
   circuit_breaker:
     max_requests: 3                # 半开状态最大请求数
@@ -1899,9 +2380,10 @@ resilience:
     max_backoff: 5s                # 最大退避时间
     backoff_multiplier: 2.0        # 退避乘数
 
+# 可观测性
 observability:
   log_level: "info"                # 日志级别
-  trace_endpoint: "otel-collector.monitoring:4317"  # OTLP Trace 接收端
+  trace_endpoint: "localhost:5081"  # OTLP Trace 接收端
   metrics_port: 9090               # Prometheus 指标端口
   service_name: "bridge-svc"   # 服务名
   service_version: "v0.1.0"        # 服务版本
@@ -1922,24 +2404,16 @@ VERSION=$(shell git describe --tags --always --dirty)
 
 all: proto build
 
-# Google APIs 仓库路径（用于 google/rpc/status.proto）
-GOOGLEAPIS ?= $(HOME)/.local/share/googleapis
-
-# 下载 googleapis（如果未存在）
-$(GOOGLEAPIS):
-	@mkdir -p $(dir $@)
-	@git clone --depth 1 https://github.com/googleapis/googleapis.git $@
-
-# 生成 protobuf 代码（2026年最新工具链）
-proto: $(GOOGLEAPIS)
+# 生成 protobuf 代码
+proto:
 	@echo "Generating protobuf code..."
-	@protoc \
-		-I. -I$(GOOGLEAPIS) \
-		--go_out=. --go_opt=paths=source_relative \
-		--go-grpc_out=. --go-grpc_opt=paths=source_relative \
-		api/v1/bridge.proto
+	@protoc -I api/v1 \
+           --go_out=api/v1 --go_opt=paths=source_relative \
+           --go-grpc_out=api/v1 --go-grpc_opt=paths=source_relative \
+           api/v1/bridge.proto
+	@echo "gen code success"
 
-# 构建二进制（Go 1.24）
+# 构建二进制
 build:
 	@echo "Building $(BINARY_NAME)..."
 	@go build -ldflags "-X main.version=$(VERSION)" -o bin/$(BINARY_NAME) ./cmd/bridge
@@ -1977,11 +2451,11 @@ deps:
 	@go mod verify
 ```
 
-### 7.2 `Dockerfile`（基于 Go 1.24）
+### 7.2 `Dockerfile`（基于 Go 1.25）
 
 ```dockerfile
-# 构建阶段（Go 1.24 Alpine）
-FROM golang:1.24-alpine AS builder
+# 构建阶段（Go 1.25 Alpine）
+FROM golang:1.25-alpine AS builder
 
 WORKDIR /app
 COPY go.mod go.sum ./
@@ -1994,14 +2468,14 @@ RUN go build -ldflags "-w -s" -o bridge-svc ./cmd/bridge
 FROM alpine:latest
 
 RUN apk --no-cache add ca-certificates
-WORKDIR /root/
+WORKDIR /app/
 
-COPY --from=builder /app/bridge-svc .
+COPY --from=builder /app/bridge-svc /app/bridge-svc
 COPY config/bridge.yaml ./config/
 
 EXPOSE 50051 9090
 
-CMD ["./bridge-svc"]
+ENTRYPOINT ["/app/bridge-svc"]
 ```
 
 ---
@@ -2113,6 +2587,8 @@ data:
 
 ### 9.1 业务方调用 Bridge（Go gRPC 客户端示例）
 
+参考项目中的 [client/main.go](client/main.go)：
+
 ```go
 package main
 
@@ -2122,15 +2598,25 @@ import (
 	"log"
 	"time"
 
-	bridgev1 "github.com/daheige/bridge-svc/api/v1"
+	"github.com/daheige/hello-pb/pb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/anypb"
+
+	bridgev1 "github.com/daheige/bridge-svc/api/v1"
 )
 
 func main() {
 	// 1. 建立到 Bridge 的 gRPC 连接
-	conn, err := grpc.NewClient("bridge-svc:50051", grpc.WithTransportCredentials(insecure.NewCredentials()))
+	address := "localhost:50052"
+	conn, err := grpc.NewClient(
+		address,
+		// 如果使用k8s命名服务以及headless方式访问，可启用 round_robin 负载均衡
+		// grpc.WithDefaultServiceConfig(`{"loadBalancingConfig": [{"round_robin":{}}]}`),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithIdleTimeout(30*time.Minute),
+		grpc.WithMaxCallAttempts(3),
+	)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -2139,15 +2625,13 @@ func main() {
 	// 2. 创建 Bridge 客户端
 	client := bridgev1.NewBridgeServiceClient(conn)
 
-	// 3. 构建业务请求（以调用订单服务创建订单为例）
-	createOrderReq := &CreateOrderRequest{
-		UserId:    "user-123",
-		ProductId: "product-456",
-		Quantity:  2,
+	// 3. 构建业务请求
+	req := &pb.HelloReq{
+		Name: "daheige",
 	}
 
 	// 4. 将业务请求打包为 Any（Bridge 不感知具体 Schema）
-	payload, err := anypb.New(createOrderReq)
+	payload, err := anypb.New(req)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -2157,12 +2641,13 @@ func main() {
 	defer cancel()
 
 	resp, err := client.CallUnary(ctx, &bridgev1.UnaryRequest{
-		// target: 下游服务名/方法名
-		Target:   "order_service/CreateOrder",
+		// target: 下游服务名/方法名/版本
+		// 对应 gRPC 方法路径，如 /Hello.Greeter/SayHello
+		Target: "Hello.Greeter/SayHello/v1",
 		// protocol: 下游服务协议类型（GRPC/HTTP）
 		Protocol: "GRPC",
 		// payload: 业务请求负载
-		Payload:  payload,
+		Payload: payload,
 		// metadata: 透传给下游的元数据（如认证、追踪等）
 		Metadata: map[string]string{
 			"authorization": "Bearer token123",
@@ -2178,20 +2663,17 @@ func main() {
 
 	// 6. 处理响应
 	if resp.Status != nil && resp.Status.Code != 0 {
-		fmt.Printf("Error: %s
-", resp.Status.Message)
+		fmt.Printf("Error: %s", resp.Status.Message)
 		return
 	}
 
 	// 7. 从 Any 解包业务响应
-	var createOrderResp CreateOrderResponse
-	if err := resp.Payload.UnmarshalTo(&createOrderResp); err != nil {
+	var res pb.HelloReply
+	if err := resp.Payload.UnmarshalTo(&res); err != nil {
 		log.Fatal(err)
 	}
 
-	fmt.Printf("Order created! ID: %s, Latency: %d us, Upstream: %s
-",
-		createOrderResp.OrderId, resp.LatencyUs, resp.UpstreamNode)
+	fmt.Printf("res message:%s", res.Message)
 }
 ```
 
@@ -2200,7 +2682,7 @@ func main() {
 ```java
 // 使用 protobuf-java 和 grpc-java
 ManagedChannel channel = ManagedChannelBuilder
-    .forAddress("bridge-svc", 50051)
+    .forAddress("bridge-svc", 50052)
     .usePlaintext()
     .build();
 
@@ -2216,7 +2698,7 @@ Any payload = Any.pack(CreateOrderRequest.newBuilder()
 
 // 调用 Bridge
 UnaryResponse response = stub.callUnary(UnaryRequest.newBuilder()
-    .setTarget("order_service/CreateOrder")
+    .setTarget("order_service/CreateOrder/v1")
     .setProtocol("GRPC")
     .setPayload(payload)
     .putMetadata("authorization", "Bearer token123")
@@ -2240,7 +2722,7 @@ from bridge.v1 import bridge_pb2, bridge_pb2_grpc
 from google.protobuf import any_pb2
 
 # 建立连接
-channel = grpc.insecure_channel('bridge-svc:50051')
+channel = grpc.insecure_channel('bridge-svc:50052')
 stub = bridge_pb2_grpc.BridgeServiceStub(channel)
 
 # 构建业务请求
@@ -2257,7 +2739,7 @@ payload.Pack(order_req)
 
 # 调用 Bridge
 response = stub.CallUnary(bridge_pb2.UnaryRequest(
-    target="order_service/CreateOrder",
+    target="order_service/CreateOrder/v1",
     protocol="GRPC",
     payload=payload,
     metadata={
@@ -2282,18 +2764,31 @@ else:
 
 #### 9.4.1 注册数据结构
 
+`pkg/registry/registry.go` 实现基于 etcd 租约的服务注册，支持 KeepAlive 断线后自动重新注册。
+
 ```go
 package registry
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"log"
+	"strings"
+	"sync"
 	"time"
 
 	"go.etcd.io/etcd/client/v3"
 )
 
-// Endpoint 服务节点信息
-// 注册到 etcd 的数据结构，Bridge 据此进行路由和协议选择
+// DefaultTTL etcd 租约默认 TTL，单位秒。
+const DefaultTTL = 10
+
+// DefaultEtcdTimeout etcd 操作默认超时。
+const DefaultEtcdTimeout = 5 * time.Second
+
+// Endpoint 服务节点信息。
+// 注册到 etcd 的数据结构，Bridge 据此进行路由和协议选择。
 type Endpoint struct {
 	Address  string            `json:"address"`  // 服务地址，如 "10.0.1.5:50051"
 	Weight   uint32            `json:"weight"`   // 权重，用于负载均衡（默认 100）
@@ -2303,21 +2798,58 @@ type Endpoint struct {
 	Healthy  bool              `json:"healthy"`  // 健康状态
 }
 
-// ServiceRegistry 服务注册器
-type ServiceRegistry struct {
-	client   *clientv3.Client
-	prefix   string
-	leaseID  clientv3.LeaseID
-	service  string
-	version  string
-	endpoint Endpoint
+// RegistryOption 服务注册器配置选项。
+type RegistryOption func(*ServiceRegistry)
+
+// WithTTL 设置 etcd 租约 TTL（秒）。
+func WithTTL(ttl int64) RegistryOption {
+	return func(r *ServiceRegistry) {
+		if ttl > 0 {
+			r.ttl = ttl
+		}
+	}
 }
 
-// NewServiceRegistry 创建服务注册器
+// WithEtcdTimeout 设置 etcd 操作超时。
+func WithEtcdTimeout(timeout time.Duration) RegistryOption {
+	return func(r *ServiceRegistry) {
+		if timeout > 0 {
+			r.etcdTimeout = timeout
+		}
+	}
+}
+
+// WithInstanceID 设置实例标识，用于构造唯一注册 key。
+// 默认使用 sanitized 后的 endpoint.Address。
+func WithInstanceID(id string) RegistryOption {
+	return func(r *ServiceRegistry) {
+		if id != "" {
+			r.instanceID = sanitizeInstanceID(id)
+		}
+	}
+}
+
+// ServiceRegistry 服务注册器。
+type ServiceRegistry struct {
+	client      *clientv3.Client
+	prefix      string
+	service     string
+	version     string
+	instanceID  string
+	endpoint    Endpoint
+	leaseID     clientv3.LeaseID
+	mu          sync.Mutex
+	ttl         int64
+	etcdTimeout time.Duration
+	stop        chan struct{}
+	once        sync.Once
+}
+
+// NewServiceRegistry 创建服务注册器。
 // prefix: etcd 前缀，如 "/services/"
 // service: 服务名，如 "order_service"
-// version: 版本，如 "default" 或 "v2"
-func NewServiceRegistry(etcdEndpoints []string, prefix, service, version string, endpoint Endpoint) (*ServiceRegistry, error) {
+// version: 版本，如 "v2"；为空则规范化为 "_default"
+func NewServiceRegistry(etcdEndpoints []string, prefix, service, version string, endpoint Endpoint, opts ...RegistryOption) (*ServiceRegistry, error) {
 	cli, err := clientv3.New(clientv3.Config{
 		Endpoints:   etcdEndpoints,
 		DialTimeout: 5 * time.Second,
@@ -2326,60 +2858,213 @@ func NewServiceRegistry(etcdEndpoints []string, prefix, service, version string,
 		return nil, err
 	}
 
-	return &ServiceRegistry{
-		client:   cli,
-		prefix:   prefix,
-		service:  service,
-		version:  version,
-		endpoint: endpoint,
-	}, nil
+	if prefix == "" {
+		prefix = "/services/"
+	}
+	prefix = strings.TrimPrefix(prefix, "/")
+	prefix = strings.TrimSuffix(prefix, "/")
+	prefix = fmt.Sprintf("/%s", prefix)
+
+	if version == "" {
+		version = "_default"
+	}
+
+	r := &ServiceRegistry{
+		client:      cli,
+		prefix:      prefix,
+		service:     service,
+		version:     version,
+		instanceID:  sanitizeInstanceID(endpoint.Address),
+		endpoint:    endpoint,
+		ttl:         DefaultTTL,
+		etcdTimeout: DefaultEtcdTimeout,
+		stop:        make(chan struct{}),
+	}
+
+	for _, opt := range opts {
+		opt(r)
+	}
+
+	return r, nil
 }
 
-// Register 注册服务到 etcd
-// 使用租约（lease）实现自动过期，服务异常退出时自动从 etcd 移除
+// Register 注册服务到 etcd。
+// 使用租约（lease）实现自动过期，服务异常退出时自动从 etcd 移除。
 func (r *ServiceRegistry) Register() error {
-	// 创建租约，TTL 为 10 秒，需要定期续租
-	resp, err := r.client.Grant(context.Background(), 10)
-	if err != nil {
-		return err
-	}
-	r.leaseID = resp.ID
-
-	// 构建注册数据
-	endpoints := []Endpoint{r.endpoint}
-	data, err := json.Marshal(endpoints)
-	if err != nil {
+	if err := r.registerOnce(); err != nil {
 		return err
 	}
 
-	// 注册到 etcd: /services/{service}/{version}
-	key := r.prefix + r.service + "/" + r.version
-	_, err = r.client.Put(context.Background(), key, string(data), clientv3.WithLease(r.leaseID))
-	if err != nil {
-		return err
-	}
-
-	// 启动续租协程
 	go r.keepAlive()
-
 	return nil
 }
 
-// keepAlive 定期续租，保持服务注册状态
-func (r *ServiceRegistry) keepAlive() {
-	ch, err := r.client.KeepAlive(context.Background(), r.leaseID)
+func (r *ServiceRegistry) registerOnce() error {
+	ctx, cancel := context.WithTimeout(context.Background(), r.etcdTimeout)
+	defer cancel()
+
+	resp, err := r.client.Grant(ctx, r.ttl)
 	if err != nil {
-		return
+		return fmt.Errorf("grant lease failed: %w", err)
 	}
-	for range ch {
-		// 续租成功，无需处理
+
+	data, err := json.Marshal(r.endpoint)
+	if err != nil {
+		return fmt.Errorf("marshal endpoint failed: %w", err)
+	}
+
+	key := r.registryKey()
+	_, err = r.client.Put(ctx, key, string(data), clientv3.WithLease(resp.ID))
+	if err != nil {
+		return fmt.Errorf("put endpoint failed: %w", err)
+	}
+
+	r.mu.Lock()
+	r.leaseID = resp.ID
+	r.mu.Unlock()
+
+	log.Printf("registered service: %s leaseID:%v", key, resp.ID)
+	return nil
+}
+
+// etcd key格式：/services/Hello.Greeter/v1/127.0.0.1-50051
+func (r *ServiceRegistry) registryKey() string {
+	return fmt.Sprintf("%s/%s/%s/%s", r.prefix, r.service, r.version, r.instanceID)
+}
+
+// keepAlive 保持租约，并在 KeepAlive channel 关闭后自动重新注册。
+func (r *ServiceRegistry) keepAlive() {
+	for {
+		select {
+		case <-r.stop:
+			return
+		default:
+		}
+
+		if !r.runKeepAlive() {
+			return
+		}
+
+		// KeepAlive 异常退出，等待一小段时间后由外层循环重新建立。
+		time.Sleep(time.Second)
 	}
 }
 
-// Deregister 从 etcd 注销服务
+// runKeepAlive 对当前 leaseID 执行一次 KeepAlive。
+func (r *ServiceRegistry) runKeepAlive() bool {
+	r.mu.Lock()
+	leaseID := r.leaseID
+	r.mu.Unlock()
+
+	if leaseID == 0 {
+		if err := r.reRegister(); err != nil {
+			log.Printf("re-register failed (lease is zero): %v", err)
+		}
+		return true
+	}
+
+	ch, err := r.client.KeepAlive(context.Background(), leaseID)
+	if err != nil {
+		log.Printf("keepalive init failed: %v", err)
+		if err := r.reRegister(); err != nil {
+			log.Printf("re-register failed: %v", err)
+		}
+		return true
+	}
+
+	for {
+		select {
+		case <-r.stop:
+			return false
+		case ka, ok := <-ch:
+			if !ok || ka == nil {
+				log.Println("keepalive channel closed, re-registering")
+				if err := r.reRegister(); err != nil {
+					log.Printf("re-register failed: %v", err)
+				}
+				return true
+			}
+		}
+	}
+}
+
+// reRegister 在 KeepAlive 失败或 lease 失效时重新创建 lease 并写入注册信息。
+func (r *ServiceRegistry) reRegister() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	select {
+	case <-r.stop:
+		return nil
+	default:
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), r.etcdTimeout)
+	defer cancel()
+
+	resp, err := r.client.Grant(ctx, r.ttl)
+	if err != nil {
+		return fmt.Errorf("grant lease failed: %w", err)
+	}
+
+	data, err := json.Marshal(r.endpoint)
+	if err != nil {
+		return fmt.Errorf("marshal endpoint failed: %w", err)
+	}
+
+	key := r.registryKey()
+	_, err = r.client.Put(ctx, key, string(data), clientv3.WithLease(resp.ID))
+	if err != nil {
+		return fmt.Errorf("put endpoint failed: %w", err)
+	}
+
+	r.leaseID = resp.ID
+	log.Printf("re-registered service: %s leaseID:%v", key, resp.ID)
+	return nil
+}
+
+// Deregister 从 etcd 注销服务，幂等且安全。
 func (r *ServiceRegistry) Deregister() error {
-	_, err := r.client.Revoke(context.Background(), r.leaseID)
-	return err
+	r.once.Do(func() {
+		close(r.stop)
+	})
+
+	r.mu.Lock()
+	leaseID := r.leaseID
+	r.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), r.etcdTimeout)
+	defer cancel()
+
+	if leaseID != 0 {
+		if _, err := r.client.Revoke(ctx, leaseID); err != nil {
+			log.Printf("revoke lease failed: %v", err)
+		}
+		r.mu.Lock()
+		r.leaseID = 0
+		r.mu.Unlock()
+	}
+
+	key := r.registryKey()
+	_, err := r.client.Delete(ctx, key)
+	if err != nil {
+		return fmt.Errorf("delete endpoint failed: %w", err)
+	}
+
+	log.Printf("deregistered service: %s", key)
+	return nil
+}
+
+// sanitizeInstanceID 把地址等字符串转换为可用作 etcd key 的实例标识。
+func sanitizeInstanceID(s string) string {
+	s = strings.ReplaceAll(s, "://", "-")
+	s = strings.ReplaceAll(s, "/", "-")
+	s = strings.ReplaceAll(s, ":", "-")
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "default"
+	}
+	return s
 }
 ```
 
@@ -2435,7 +3120,7 @@ func main() {
 		"/services/",           // etcd 前缀
 
 		"Hello.Greeter",        // 服务名（对应 gRPC full method name 的 service 部分）
-		"default",              // 版本
+		"v1",                   // 版本
 		registry.Endpoint{
 			Address:  "10.0.1.5:50051",  // 本机地址
 			Weight:   100,
@@ -2444,6 +3129,7 @@ func main() {
 			Tags:     map[string]string{"version": "v1"},
 			Healthy:  true,
 		},
+		registry.WithTTL(10),
 	)
 	if err != nil {
 		log.Fatal(err)
@@ -2531,7 +3217,7 @@ func main() {
 		[]string{"etcd-0:2379", "etcd-1:2379", "etcd-2:2379"},
 		"/services/",           // etcd 前缀
 		"Hello.World",          // 服务名（对应 gRPC full method name 的 service 部分）
-		"default",              // 版本
+		"v1",                   // 版本
 		registry.Endpoint{
 			Address:  "10.0.1.7:8080",   // 本机地址
 			Weight:   100,
@@ -2575,9 +3261,9 @@ func main() {
 
 ```go
 // 调用 Greeter 服务（gRPC 下游）
-// 对应 etcd 中的 /services/Hello.Greeter/default
+// 对应 etcd 中的 /services/Hello.Greeter/v1
 resp, err := client.CallUnary(ctx, &bridgev1.UnaryRequest{
-	Target:   "Hello.Greeter/SayHello",  // gRPC full method name（去掉开头的 /）
+	Target:   "Hello.Greeter/SayHello/v1",  // service/method/version
 	Protocol: "GRPC",
 	Payload:  helloPayload,
 	Metadata: map[string]string{
@@ -2586,9 +3272,9 @@ resp, err := client.CallUnary(ctx, &bridgev1.UnaryRequest{
 })
 
 // 调用 World 服务（HTTP 下游）
-// 对应 etcd 中的 /services/Hello.World/default
+// 对应 etcd 中的 /services/Hello.World/v1
 resp, err := client.CallUnary(ctx, &bridgev1.UnaryRequest{
-	Target:   "Hello.World/Hello",         // gRPC full method name 格式
+	Target:   "Hello.World/Hello/v1",        // service/method/version
 	Protocol: "HTTP",
 	Payload:  helloPayload,
 	Metadata: map[string]string{
@@ -2599,26 +3285,35 @@ resp, err := client.CallUnary(ctx, &bridgev1.UnaryRequest{
 
 ### 9.4.5 etcd 数据结构说明
 
+当前实现采用**每个实例独立 key**的注册模型，便于单个实例上下线时精确刷新缓存。
+
 ```
 etcd 键值结构：
 
 /services/                    # 前缀（Bridge 配置中的 etcd.prefix）
-  ├── order_service/          # 服务名（对应 Bridge target 的第一部分）
-  │     └── default           # 版本（对应 Bridge target 的第二个部分，省略时为 default）
-  │           → [{"address":"10.0.1.5:50051","weight":100,"protocol":"GRPC",...}]
+  ├── Hello.Greeter/          # 服务名（对应 Bridge target 的第一部分）
+  │     └── v1/               # 版本（对应 Bridge target 的第三部分，省略时为 _default）
+  │           ├── 127.0.0.1-50051   → {"address":"10.0.1.5:50051","weight":100,"protocol":"GRPC",...}
+  │           └── 127.0.0.1-50052   → {"address":"10.0.1.6:50051","weight":100,"protocol":"GRPC",...}
   │
   ├── payment_service/
-  │     └── v2                # 版本号（对应 target: "payment_service/v2/Charge"）
-  │           → [{"address":"10.0.1.6:50051","weight":100,"protocol":"GRPC",...}]
+  │     └── v2/
+  │           └── 10.0.1.6-50051    → {"address":"10.0.1.6:50051","weight":100,"protocol":"GRPC",...}
   │
   └── user_service/
-        └── default
-              → [{"address":"10.0.1.7:8080","weight":100,"protocol":"HTTP",...}]
+        └── _default/
+                  └── 10.0.1.7-8080 → {"address":"10.0.1.7:8080","weight":100,"protocol":"HTTP",...}
 ```
 
 **target 解析规则**：
-- `"order_service/CreateOrder"` → service=`order_service`, version=`default`, method=`CreateOrder`
-- `"payment_service/v2/Charge"`   → service=`payment_service`, version=`v2`, method=`Charge`
+- `"order_service/CreateOrder"`       → service=`order_service`, version=`_default`, method=`CreateOrder`
+- `"payment_service/Charge/v2"`       → service=`payment_service`, version=`v2`, method=`Charge`
+- `"Hello.Greeter/SayHello/v1"`       → service=`Hello.Greeter`, version=`v1`, method=`SayHello`
+
+**重要约定**：
+- 注册端每个实例写入**单个 Endpoint 的 JSON**，不是数组。
+- 发现端按 `{service}/{version}/` 前缀聚合所有实例，并过滤 `Healthy=true` 的节点。
+- `version` 为空时，注册侧与发现侧都会规范化为 `_default`。
 
 ### 9.4.6 查看 etcd 数据
 
@@ -2631,17 +3326,11 @@ export ETCDCTL_API=3
 # 查看所有服务注册信息（Bridge 使用的 /services/ 前缀）
 etcdctl get /services/ --prefix --keys-only
 
-# 查看具体服务的注册信息
-etcdctl get /services/Hello.Greeter/default
+# 查看具体服务的所有实例
+etcdctl get /services/Hello.Greeter/v1/ --prefix
 
-# 查看所有已注册的服务（仅 key）
-etcdctl get /services/ --prefix --keys-only
-
-# 查看所有已注册的服务（key + value）
-etcdctl get /services/ --prefix
-
-# 以 JSON 格式输出
-echo 'etcdctl get /services/Hello.Greeter/default -w json'
+# 查看具体实例的注册信息
+etcdctl get /services/Hello.Greeter/v1/127.0.0.1-50051
 
 # 监听服务变更（watch）
 etcdctl watch /services/ --prefix
@@ -2652,8 +3341,11 @@ etcdctl lease list
 # 查看具体租约信息
 etcdctl lease timetolive <lease-id>
 
-# 删除服务注册（手动注销）
-etcdctl del /services/Hello.Greeter/default
+# 删除具体实例注册（手动注销）
+etcdctl del /services/Hello.Greeter/v1/127.0.0.1-50051
+
+# 删除整个服务版本（谨慎操作）
+etcdctl del /services/Hello.Greeter/v1/ --prefix
 ```
 
 #### 使用 etcd 客户端代码查看
@@ -2749,22 +3441,24 @@ docker run -d --name etcdkeeper   -p 8080:8080   evildecay/etcdkeeper:latest
 
 ```bash
 # 查看 Bridge 服务列表
-grpcurl -plaintext bridge-svc:50051 list
+grpcurl -plaintext localhost:50052 list
 
 # 调用健康检查
-grpcurl -plaintext bridge-svc:50051 bridge.v1.BridgeService/Health
+grpcurl -plaintext localhost:50052 bridge.v1.BridgeService/Health
 
-# 调用一元方法（需要准备 payload）
+# 调用一元方法（下游 gRPC 示例）
 grpcurl -plaintext -d '{
-  "target": "order_service/CreateOrder",
+  "target": "Hello.Greeter/SayHello/v1",
   "protocol": "GRPC",
   "timeout_ms": 3000,
   "metadata": {
     "authorization": "Bearer token123",
     "x-request-id": "req-456"
   }
-}' bridge-svc:50051 bridge.v1.BridgeService/CallUnary
+}' localhost:50052 bridge.v1.BridgeService/CallUnary
 ```
+
+**注意**：下游 gRPC 服务必须启用 `reflection.Register(gs)`，Bridge 才能通过 gRPC Reflection 获取输出类型并填充响应 `Any.TypeUrl`。如果下游未开启反射，客户端调用 `UnmarshalTo` 可能因类型校验失败而报错，此时可改用 `proto.Unmarshal(resp.Payload.Value, &res)` 绕过类型校验。
 
 ---
 
@@ -2772,15 +3466,15 @@ grpcurl -plaintext -d '{
 
 | 优化点 | 实现方式 | 预期收益 |
 |--------|---------|---------|
+| **零拷贝透传** | `rawBytesCodec` 直接透传 `[]byte`，Bridge 不反序列化业务消息 | 减少 CPU 和内存开销 |
+| **反射类型缓存** | `methodTypeCache` 缓存下游方法输出类型 | 避免每次请求进行 gRPC Reflection |
 | **对象池化** | `sync.Pool` 复用 `anypb.Any` 和 `[]byte` | 减少 GC 压力 30%+ |
 | **零分配日志** | `zerolog` + `Event` 复用 | 日志路径零堆分配 |
 | **连接复用** | `grpc.ClientConn` 全局缓存（Bridge 到下游） | 避免重复 TCP 握手 |
 | **内存预分配** | `make([]byte, 0, estimatedSize)` | 减少切片扩容 |
 | **无锁缓存** | `sync.Map` 存储路由表 | 避免 RWMutex 竞争 |
-| **批处理 etcd** | Watch 事件批量应用 | 减少缓存更新频率 |
 | **pprof 持续监控** | 暴露 `/debug/pprof` 端口 | 实时识别内存/CPU 热点 |
 | **GODEBUG 调优** | `madvdontneed=0` | 优化 Linux 内存回收 |
-| **Go 1.24 新特性** | 使用 `slices` 包、`maps` 包 | 简化代码，提升性能 |
 
 ---
 
@@ -2793,7 +3487,7 @@ grpcurl -plaintext -d '{
     |
     | gRPC 协议（HTTP/2）
     v
-Bridge Service（gRPC Server :50051）
+Bridge Service（gRPC Server :50052）
     |
     | 根据 target 路由
     v
@@ -2819,11 +3513,12 @@ Protocol Handler（gRPC/HTTP）
 
 ### C. 协议透传设计
 
-使用 `google.protobuf.Any` + 自定义 `anyCodec`：
-- Bridge 不感知业务消息的 Schema
-- 避免为每个服务生成 protobuf 代码
-- 业务方直接将原始 protobuf Message 打包为 Any 传入 Bridge
-- Bridge 透传到下游，下游服务自行解包
+使用 `google.protobuf.Any` + 自定义 `rawBytesCodec` + gRPC Reflection：
+- Bridge 不感知业务消息的 Schema，不反序列化具体业务类型。
+- gRPC 场景下，`rawBytesCodec` 直接透传 `Any.Value` 的原始字节到下游，避免 Bridge 对业务消息进行 protobuf 序列化/反序列化。
+- 下游返回的原始字节被包装为 `anypb.Any` 后，Bridge 通过 gRPC Reflection 查询方法输出类型，填充 `TypeUrl`。
+- 填充 `TypeUrl` 后，业务方客户端可以正常调用 `anypb.Any.UnmarshalTo(&resp)` 进行类型校验和解包。
+- 如果下游未开启 gRPC Reflection，`UnmarshalTo` 可能因 `TypeUrl` 不匹配而失败，业务方可以改用 `proto.Unmarshal(resp.Payload.Value, &res)` 绕过类型校验。
 
 ### D. 熔断器粒度
 
@@ -2839,19 +3534,22 @@ Protocol Handler（gRPC/HTTP）
 - 最终一致性，启动时全量加载
 - watch 断连时需有兜底重连机制
 
-### F. 2026年版本更新说明
+### F. 版本更新说明
 
-| 包 | 更新前 | 更新后 | 原因 |
-|---|---|---|---|
-| `grpc-go` | v1.64.0 | **v1.79.3+** | 修复 CVE-2026-33186 (Critical) |
-| `otel` | v1.27.0 | **v1.43.0+** | 修复 CVE-2026-39882/39883 |
-| `resty/v2` | - | **v2.16.0** | 功能丰富的 HTTP 客户端，支持中间件和重试 |
-| `gobreaker` | v2.0.0 | **v2.4.0** | 兼容性更新 |
-| `prometheus` | v1.19.1 | **v1.22.0+** | 新指标类型支持 |
-| `Go` | 1.22 | **1.24+** | 2026年4月发布，新特性 |
+| 包 | 当前版本 |
+|---|---|
+| `grpc-go` | **v1.81.1** |
+| `protobuf` | **v1.36.11** |
+| `etcd/client/v3` | **v3.6.12** |
+| `otel` | **v1.44.0** |
+| `resty/v2` | **v2.17.2** |
+| `gobreaker` | **v2.4.0** |
+| `prometheus` | **v1.20.5** |
+| `zerolog` | **v1.35.1** |
+| `viper` | **v1.21.0** |
+| `Go` | **1.25.8** |
 
 ---
 
-*文档版本: v3.0 | 最后更新: 2026-06-13*  
-*Go版本: 1.24+ | 依赖版本: 2026年最新稳定版*  
-*安全修复: CVE-2026-33186, CVE-2026-39882, CVE-2026-39883*
+*文档版本: v3.1 | 最后更新: 2026-06-14*  
+*Go版本: 1.25.8+ | 依赖版本: 与 go.mod 保持一致*
