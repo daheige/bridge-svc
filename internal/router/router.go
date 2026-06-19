@@ -72,7 +72,7 @@ func (r *Router) Route(ctx context.Context, routeCtx RouteContext) (*RouteTarget
 	service, method := parseTarget(routeCtx.Target)
 	version := routeCtx.Version
 
-	endpoints, err := r.discovery.Get(ctx, service, version)
+	endpoints, err := r.discovery.GetEndpoints(ctx, service, version)
 	if err != nil {
 		return nil, fmt.Errorf("lookup endpoints: %w", err)
 	}
