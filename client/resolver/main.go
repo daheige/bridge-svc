@@ -29,7 +29,7 @@ func main() {
 	}
 
 	// 2. 注册 etcd gRPC resolver，scheme 为空则默认使用 "etcd"
-	etcd.RegisterEtcdResolver(discovery, "etcd")
+	etcd.RegisterEtcdResolver(discovery)
 
 	// 3. 通过 etcd resolver 发现 Bridge 服务并建立 gRPC 连接
 	// target 格式：etcd:///<service>/<version>

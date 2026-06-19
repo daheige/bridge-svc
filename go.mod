@@ -4,7 +4,7 @@ go 1.25.9
 
 require (
 	github.com/daheige/hello-pb v1.1.0
-	github.com/daheige/registry v1.1.0
+	github.com/daheige/registry v1.2.0
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/go-resty/resty/v2 v2.17.2
 	github.com/prometheus/client_golang v1.20.5
