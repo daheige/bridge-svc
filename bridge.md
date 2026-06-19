@@ -160,7 +160,7 @@ bridge-svc/
 │   ├── server/
 │   │   └── server.go             # grpc.Server 组装 + BridgeService 实现
 │   ├── router/
-│   │   ├── router.go             # 路由决策（支持 service/method/version）
+│   │   ├── router.go             # 路由决策（支持 target + version）
 │   │   ├── discovery.go          # （保留目录，实际发现逻辑在 router/registry）
 │   │   ├── cache.go              # （保留目录）
 │   │   └── balancer.go           # 加权轮询负载均衡
@@ -242,23 +242,27 @@ message UnaryRequest {
   // Bridge 解析后，使用 "PackageName.ServiceName" 作为 etcd 服务名，"MethodName" 作为方法名
   string target = 1;
 
+  // 下游 grpc protobuf 协议版本号，例如：v1, v2
+  // 为空表示无版本，仅按 target 进行路由
+  string version = 2;
+
   // 下游协议类型：GRPC / HTTP
   // Bridge 根据此字段选择对应的协议处理器转发请求
-  string protocol = 2;
+  string protocol = 3;
 
   // 业务负载，使用 Any 实现零拷贝透传
   // 业务方将原始 protobuf Message 打包为 Any，Bridge 不感知具体 Schema
-  google.protobuf.Any payload = 3;
+  google.protobuf.Any payload = 4;
 
   // 调用元数据，透传给下游微服务（如 auth token、trace context、region 等）
-  map<string, string> metadata = 4;
+  map<string, string> metadata = 5;
 
   // 超时配置（毫秒），覆盖全局默认值
   // 控制 Bridge 到下游微服务的调用超时
-  uint32 timeout_ms = 5;
+  uint32 timeout_ms = 6;
 
   // 重试策略
-  RetryPolicy retry = 6;
+  RetryPolicy retry = 7;
 }
 
 message RetryPolicy {
@@ -287,10 +291,15 @@ message UnaryResponse {
 }
 
 message StreamRequest {
+  // 目标服务标识，格式: "PackageName.ServiceName/MethodName"
   string target = 1;
-  string protocol = 2;
-  google.protobuf.Any payload = 3;
-  map<string, string> metadata = 4;
+
+  // 下游 grpc protobuf 协议版本号，例如：v1, v2
+  string version = 2;
+
+  string protocol = 3;
+  google.protobuf.Any payload = 4;
+  map<string, string> metadata = 5;
 }
 
 message StreamResponse {
@@ -602,8 +611,9 @@ func New(cfg *config.EtcdConfig) (*Router, error) {
 	return r, nil
 }
 
-// parseTarget 解析 "service/method" 或 "service/method/version"
-func parseTarget(target string) (service, method, version string) {
+// parseTarget 解析 "service/method" 格式。
+// 版本信息通过独立的 RouteContext.Version 传递，不再从 target 中解析。
+func parseTarget(target string) (service, method string) {
 	parts := strings.Split(target, "/")
 	switch len(parts) {
 	case 2:
@@ -3082,7 +3092,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/daheige/bridge-svc/pkg/registry"
+	"github.com/daheige/registry"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 )
@@ -3173,7 +3183,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/daheige/bridge-svc/pkg/registry"
+	"github.com/daheige/registry"
 )
 
 // UserHandler 用户服务 HTTP 处理器
@@ -3263,7 +3273,8 @@ func main() {
 // 调用 Greeter 服务（gRPC 下游）
 // 对应 etcd 中的 /services/Hello.Greeter/v1
 resp, err := client.CallUnary(ctx, &bridgev1.UnaryRequest{
-	Target:   "Hello.Greeter/SayHello/v1",  // service/method/version
+	Target:   "Hello.Greeter/SayHello", // service/method
+	Version:  "v1",                     // 目标版本
 	Protocol: "GRPC",
 	Payload:  helloPayload,
 	Metadata: map[string]string{
@@ -3274,7 +3285,8 @@ resp, err := client.CallUnary(ctx, &bridgev1.UnaryRequest{
 // 调用 World 服务（HTTP 下游）
 // 对应 etcd 中的 /services/Hello.World/v1
 resp, err := client.CallUnary(ctx, &bridgev1.UnaryRequest{
-	Target:   "Hello.World/Hello/v1",        // service/method/version
+	Target:   "Hello.World/Hello",       // service/method
+	Version:  "v1",                     // 目标版本
 	Protocol: "HTTP",
 	Payload:  helloPayload,
 	Metadata: map[string]string{

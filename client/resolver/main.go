@@ -11,54 +11,65 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/anypb"
 
+	"github.com/daheige/registry/etcd"
+
 	bridgev1 "github.com/daheige/bridge-svc/api/v1"
 )
 
 func main() {
-	// 1. 建立到 Bridge 的 gRPC 连接
-	address := "localhost:50052"
-	conn, err := grpc.NewClient(
-		address,
-		// 如果使用k8s命名服务以及headless方式访问，需要打开下面的注释，实现客户端负载均衡
-		// 关键配置：启用round_robin负载均衡策略
-		grpc.WithDefaultServiceConfig(`{"loadBalancingConfig": [{"round_robin":{}}]}`),
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithIdleTimeout(30*time.Minute), // 连接生命周期
-		grpc.WithMaxCallAttempts(3),          // 最大重试次数
+	// 1. 创建 etcd 服务发现器
+	// 实际使用时应从配置文件读取 etcd 地址与前缀。
+	discovery, err := etcd.NewEtcdDiscovery(
+		[]string{"localhost:12379"}, // etcd 集群地址
+		"/services",                 // 服务注册前缀
+		5*time.Second,               // 连接超时
 	)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("create etcd discovery failed: %v", err)
+	}
+
+	// 2. 注册 etcd gRPC resolver，scheme 为空则默认使用 "etcd"
+	etcd.RegisterEtcdResolver(discovery, "etcd")
+
+	// 3. 通过 etcd resolver 发现 Bridge 服务并建立 gRPC 连接
+	// target 格式：etcd:///<service>/<version>
+	// 此处假设 Bridge 服务以 service="bridge-svc"、空版本注册到 etcd。
+	conn, err := grpc.NewClient(
+		"etcd:///bridge-svc/v1",
+		grpc.WithDefaultServiceConfig(`{"loadBalancingConfig": [{"round_robin":{}}]}`),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		log.Fatalf("connect bridge via etcd resolver failed: %v", err)
 	}
 	defer conn.Close()
 
-	// 2. 创建 Bridge 客户端
+	// 4. 创建 Bridge 客户端
 	client := bridgev1.NewBridgeServiceClient(conn)
 
-	// 3. 构建业务请求（以调用订单服务创建订单为例）
+	// 5. 构建业务请求
 	req := &pb.HelloReq{
 		Name: "daheige",
 	}
-
-	// 4. 将业务请求打包为 Any（Bridge 不感知具体 Schema）
 	payload, err := anypb.New(req)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	// 5. 调用 Bridge
+	// 6. 调用 Bridge
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	resp, err := client.CallUnary(ctx, &bridgev1.UnaryRequest{
-		// target: 下游服务名/方法名，对应 gRPC 方法路径，如 /Hello.Greeter/SayHello
+		// target: 下游服务名/方法名，对应 gRPC 方法路径
 		Target: "Hello.Greeter/SayHello",
-		// version: 下游 grpc protobuf 协议版本号，如 v1、v2，或者默认为空
+		// version: 下游 grpc protobuf 协议版本号，为空表示无版本
 		Version: "",
 		// protocol: 下游服务协议类型（GRPC/HTTP）
 		Protocol: "GRPC",
 		// payload: 业务请求负载
 		Payload: payload,
-		// metadata: 透传给下游的元数据（如认证、追踪等）
+		// metadata: 透传给下游的元数据
 		Metadata: map[string]string{
 			"authorization": "Bearer token123",
 			"x-request-id":  "req-456",
@@ -71,24 +82,17 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// 6. 处理响应
+	// 7. 处理响应
 	if resp.Status != nil && resp.Status.Code != 0 {
 		fmt.Printf("Error: %s", resp.Status.Message)
 		return
 	}
 
-	// 7. 从 Any 解包业务响应
+	// 8. 从 Any 解包业务响应
 	var res pb.HelloReply
 	if err := resp.Payload.UnmarshalTo(&res); err != nil {
 		log.Fatal(err)
 	}
 
-	// 如果你的下游服务没开
-	//  reflection，控制台会打印
-	//  warning，客户端仍然报同样错误。此时可以让客户端绕过类型校验
-	// if err := proto.Unmarshal(resp.Payload.Value, &res); err != nil {
-	// 	log.Fatal(err)
-	// }
-
-	fmt.Printf("res message:%s", res.Message)
+	fmt.Printf("res message:%s\n", res.Message)
 }

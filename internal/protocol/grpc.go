@@ -3,11 +3,11 @@ package protocol
 import (
 	"context"
 	"fmt"
-	"log"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/rs/zerolog/log"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
@@ -59,7 +59,13 @@ func (h *GRPCHandler) Call(ctx context.Context, target *router.RouteTarget, payl
 	service = strings.TrimSuffix(service, "/")
 	method := fmt.Sprintf("/%s/%s", service, target.MethodName)
 
-	log.Println("call method:", method)
+	// log.Println("call method:", method)
+
+	log.Info().
+		Str("method", method).
+		Dur("duration", time.Since(start)).
+		Interface("metadata", md).
+		Msg("call rpc method")
 
 	// 3. 透传 metadata 到下游（包含 trace context、auth token 等）
 	ctx = metadata.NewOutgoingContext(ctx, md)

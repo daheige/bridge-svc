@@ -30,23 +30,26 @@ message UnaryRequest {
   // Bridge 解析后，使用 "PackageName.ServiceName" 作为 etcd 服务名，"MethodName" 作为方法名
   string target = 1;
 
+  // 下游grpc protobuf协议版本号，例如：v1,v2
+  string version =2;
+
   // 下游协议类型：GRPC / HTTP
   // Bridge 根据此字段选择对应的协议处理器转发请求
-  string protocol = 2;
+  string protocol = 3;
 
   // 业务负载，使用 Any 实现零拷贝透传
   // 业务方将原始 protobuf Message 打包为 Any，Bridge 不感知具体 Schema
-  google.protobuf.Any payload = 3;
+  google.protobuf.Any payload = 4;
 
   // 调用元数据，透传给下游微服务（如 auth token、trace context、region 等）
-  map<string, string> metadata = 4;
+  map<string, string> metadata = 5;
 
   // 超时配置（毫秒），覆盖全局默认值
   // 控制 Bridge 到下游微服务的调用超时
-  uint32 timeout_ms = 5;
+  uint32 timeout_ms = 6;
 
   // 重试策略
-  RetryPolicy retry = 6;
+  RetryPolicy retry = 7;
 }
 
 message RetryPolicy {
@@ -75,10 +78,15 @@ message UnaryResponse {
 }
 
 message StreamRequest {
+  // Bridge 解析后，使用 "PackageName.ServiceName" 作为 etcd 服务名，"MethodName" 作为方法名
   string target = 1;
-  string protocol = 2;
-  google.protobuf.Any payload = 3;
-  map<string, string> metadata = 4;
+
+  // 下游grpc protobuf协议版本号，例如：v1,v2
+  string version =2;
+
+  string protocol = 3;
+  google.protobuf.Any payload = 4;
+  map<string, string> metadata = 5;
 }
 
 message StreamResponse {

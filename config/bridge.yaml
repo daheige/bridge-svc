@@ -5,6 +5,8 @@ server:
   max_concurrent_streams: 10000       # 最大并发流
   keepalive_time: 7200s              # 连接保活时间
   keepalive_timeout: 20s             # 保活超时
+  service_name: "bridge-svc"   # 服务名
+  service_version: "v1"        # 服务版本
 
 # etcd配置
 etcd:
@@ -48,5 +50,3 @@ observability:
   log_level: "info"                # 日志级别
   trace_endpoint: "localhost:5081"  # OTLP Trace 接收端
   metrics_port: 9090               # Prometheus 指标端口
-  service_name: "bridge-svc"   # 服务名
-  service_version: "v0.1.0"        # 服务版本

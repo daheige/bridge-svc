@@ -9,11 +9,11 @@ Go bridge service for gRPC and HTTP protocol proxy.
 - **统一协议入口**：业务方通过 gRPC 协议调用 Bridge，无需关心下游协议差异。
 - **动态服务发现**：基于 etcd 实现服务注册与发现，支持本地缓存 + Watch 增量更新。
 - **多协议转发**：支持 `GRPC` 协议透传和 `HTTP` 协议转换。
-- **零拷贝透传**：gRPC 场景使用 `raw-bytes` codec 直接透传业务消息字节，Bridge 不反序列化具体业务类型。
+- **零拷贝透传**：gRPC 场景直接透传业务消息字节，Bridge 不反序列化具体业务类型。
 - **gRPC Reflection**：自动通过下游 gRPC Reflection 获取输出类型，填充响应 `Any.TypeUrl`，便于客户端 `UnmarshalTo`。
 - **稳定性保障**：内置熔断器（按 endpoint 维度）、限流器、重试策略。
 - **可观测性**：集成 OpenTelemetry Trace、Prometheus 指标和 zerolog 结构化日志。
-- **服务注册 SDK**：`pkg/registry` 提供 etcd 服务注册、发现与自定义 gRPC resolver。
+- **自注册与发现**：Bridge 启动时自动注册到 etcd，客户端可通过 etcd resolver 动态发现 Bridge 节点。
 
 ## 架构
 
@@ -59,12 +59,12 @@ make proto
 
 ```bash
 # 1. 启动 etcd
-# 2. 注册下游服务到 etcd（参考 pkg/registry/readme.md）
+# 2. 注册下游服务到 etcd（参考 github.com/daheige/registry）
 # 3. 启动 Bridge
 make run
 ```
 
-默认监听 `0.0.0.0:50052`，Prometheus 指标端口为 `9090`。
+默认监听 `0.0.0.0:50052`，Prometheus 指标端口为 `9090`。启动后 Bridge 会自动注册到 etcd，注册路径由 `config/bridge.yaml` 中的 `etcd.prefix` 和 `server.service_name` 决定。
 
 ### 客户端调用
 
@@ -72,14 +72,40 @@ make run
 
 ```go
 resp, err := client.CallUnary(ctx, &bridgev1.UnaryRequest{
-    Target:   "Hello.Greeter/SayHello/v1",
+    Target:   "Hello.Greeter/SayHello",
+    Version:  "v1",
     Protocol: "GRPC",
     Payload:  payload,
     Metadata: map[string]string{
         "authorization": "Bearer token123",
+        "x-request-id":  "req-456",
+        "x-trace-id":    "trace-789",
     },
     TimeoutMs: 3000,
 })
+```
+
+如需通过 etcd 动态发现 Bridge 服务，参考 [client/resolver/main.go](client/resolver/main.go)：
+
+```go
+import "github.com/daheige/registry/etcd"
+
+discovery, err := etcd.NewEtcdDiscovery(
+    []string{"localhost:12379"},
+    "/services",
+    5*time.Second,
+)
+if err != nil {
+    log.Fatal(err)
+}
+
+etcd.RegisterEtcdResolver(discovery, "etcd")
+
+conn, err := grpc.NewClient(
+    "etcd:///bridge-svc/v1",
+    grpc.WithDefaultServiceConfig(`{"loadBalancingConfig": [{"round_robin":{}}]}`),
+    grpc.WithTransportCredentials(insecure.NewCredentials()),
+)
 ```
 
 ## 主要目录
@@ -88,10 +114,11 @@ resp, err := client.CallUnary(ctx, &bridgev1.UnaryRequest{
 bridge-svc/
 ├── api/v1              # Bridge gRPC API 定义
 ├── client              # 客户端调用示例
+│   └── resolver        # 基于 etcd resolver 发现 Bridge 的示例
 ├── cmd/bridge          # 服务入口
 ├── config              # 运行时配置
 ├── internal            # 内部实现
-│   ├── config          # 配置加载与热更新
+│   ├── config          # 配置加载
 │   ├── middleware      # 拦截器链
 │   ├── observability   # Trace / Metrics / Logging
 │   ├── pool            # gRPC 连接池
@@ -100,7 +127,7 @@ bridge-svc/
 │   ├── router          # 路由与负载均衡
 │   └── server          # gRPC Server 组装
 ├── k8s                 # Kubernetes 部署示例
-└── pkg/registry        # 服务注册、发现与 gRPC resolver SDK
+└── bin                 # 构建产物
 ```
 
 ## 配置
@@ -109,18 +136,23 @@ bridge-svc/
 
 ## 下游服务注册
 
-下游服务使用 `pkg/registry` 注册到 etcd：
+下游服务使用独立的 `github.com/daheige/registry` 库注册到 etcd：
 
 ```go
-reg, err := registry.NewServiceRegistry(
+import (
+    "github.com/daheige/registry"
+    "github.com/daheige/registry/etcd"
+)
+
+reg, err := etcd.NewServiceRegistry(
     []string{"127.0.0.1:2379"},
     "/services/",
     "Hello.Greeter",
-    "v1",
     registry.Endpoint{
         Address:  "127.0.0.1:50051",
         Weight:   100,
-        Protocol: "GRPC",
+        Protocol: registry.ProtocolGRPC,
+        Version:  "v1",
         Healthy:  true,
     },
 )
@@ -128,8 +160,6 @@ if err != nil { log.Fatal(err) }
 if err := reg.Register(); err != nil { log.Fatal(err) }
 defer reg.Deregister()
 ```
-
-详细说明见 [pkg/registry/readme.md](pkg/registry/readme.md)。
 
 ## 调试
 
@@ -142,7 +172,8 @@ grpcurl -plaintext localhost:50052 bridge.v1.BridgeService/Health
 
 # 调用一元方法
 grpcurl -plaintext -d '{
-  "target": "Hello.Greeter/SayHello/v1",
+  "target": "Hello.Greeter/SayHello",
+  "version": "v1",
   "protocol": "GRPC",
   "timeout_ms": 3000
 }' localhost:50052 bridge.v1.BridgeService/CallUnary

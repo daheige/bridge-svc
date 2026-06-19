@@ -11,6 +11,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog/log"
 
+	"github.com/daheige/registry/etcd"
+
 	bridgev1 "github.com/daheige/bridge-svc/api/v1"
 	"github.com/daheige/bridge-svc/internal/config"
 	"github.com/daheige/bridge-svc/internal/middleware"
@@ -39,7 +41,12 @@ type BridgeServer struct {
 
 // New 创建 BridgeServer 实例
 func New(cfg *config.Config) (*BridgeServer, error) {
-	r, err := router.New(&cfg.Etcd)
+	discovery, err := etcd.NewEtcdDiscovery(cfg.Etcd.Endpoints, cfg.Etcd.Prefix, cfg.Etcd.DialTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("init discovery: %w", err)
+	}
+
+	r, err := router.New(discovery)
 	if err != nil {
 		return nil, fmt.Errorf("init router: %w", err)
 	}
@@ -56,9 +63,10 @@ func New(cfg *config.Config) (*BridgeServer, error) {
 func (s *BridgeServer) CallUnary(ctx context.Context, req *bridgev1.UnaryRequest) (*bridgev1.UnaryResponse, error) {
 	start := time.Now()
 
-	// 1. 路由决策：根据 target 找到下游微服务节点
+	// 1. 路由决策：根据 target 和 version 找到下游微服务节点
 	routeCtx := router.RouteContext{
 		Target:   req.Target,
+		Version:  req.Version,
 		Protocol: router.ProtocolType(req.Protocol),
 		Metadata: toMetadataMD(req.Metadata),
 	}
@@ -120,6 +128,29 @@ func (s *BridgeServer) CallUnary(ctx context.Context, req *bridgev1.UnaryRequest
 	}, nil
 }
 
+// CallStream 流式调用处理（当前为占位实现）
+// 解析 target 与 version 构造路由上下文，后续可接入真正的流式协议转发。
+func (s *BridgeServer) CallStream(stream grpc.BidiStreamingServer[bridgev1.StreamRequest, bridgev1.StreamResponse]) error {
+	req, err := stream.Recv()
+	if err != nil {
+		return status.Errorf(codes.Internal, "recv first stream request: %v", err)
+	}
+
+	routeCtx := router.RouteContext{
+		Target:   req.Target,
+		Version:  req.Version,
+		Protocol: router.ProtocolType(req.Protocol),
+		Metadata: toMetadataMD(req.Metadata),
+	}
+
+	_, err = s.router.Route(stream.Context(), routeCtx)
+	if err != nil {
+		return status.Errorf(codes.Unavailable, "routing failed: %v", err)
+	}
+
+	return status.Error(codes.Unimplemented, "CallStream not yet implemented")
+}
+
 // toMetadataMD 将 map[string]string 转换为 metadata.MD
 func toMetadataMD(m map[string]string) metadata.MD {
 	md := metadata.MD{}
@@ -149,21 +180,29 @@ func (s *BridgeServer) Health(_ context.Context, req *bridgev1.HealthRequest) (*
 	}, nil
 }
 
-// Start 启动 Bridge 服务
-// 1. 初始化可观测性（日志、Trace、指标）
-// 2. 创建 gRPC Server，注册 BridgeService
-// 3. 启动 Prometheus 指标 HTTP 服务
-// 4. 监听 gRPC 端口，接收业务方请求
-func Start(cfg *config.Config) error {
+// Server 封装 Bridge gRPC 服务的完整生命周期。
+type Server struct {
+	gs     *grpc.Server
+	lis    net.Listener
+	bridge *BridgeServer
+	cfg    *config.Config
+}
+
+// NewServer 创建并初始化 Bridge gRPC 服务，但暂不启动 Serve。
+// 调用方可通过 Addr() 获取实际监听地址，完成 etcd 注册后再调用 Start()。
+func NewServer(cfg *config.Config) (*Server, error) {
+	opConf := cfg.Observability
+	opConf.ServiceName = cfg.Server.ServiceName
+	opConf.ServiceVersion = cfg.Server.ServiceVersion
 	// 初始化可观测性
-	if err := observability.Init(cfg.Observability); err != nil {
-		return fmt.Errorf("init observability: %w", err)
+	if err := observability.Init(opConf); err != nil {
+		return nil, fmt.Errorf("init observability: %w", err)
 	}
 
 	// 创建 Bridge 服务实例
 	bridge, err := New(cfg)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// 组装拦截器链（从外到内：Recovery -> Logging -> Auth -> RateLimit -> Trace）
@@ -202,9 +241,33 @@ func Start(cfg *config.Config) error {
 	// 监听 gRPC 端口（业务方通过此端口调用 Bridge）
 	lis, err := net.Listen("tcp", cfg.Server.ListenAddr)
 	if err != nil {
-		return fmt.Errorf("listen: %w", err)
+		return nil, fmt.Errorf("listen: %w", err)
 	}
 
-	log.Info().Str("addr", cfg.Server.ListenAddr).Msg("bridge gRPC server starting, waiting for upstream requests")
-	return gs.Serve(lis)
+	log.Info().Str("addr", lis.Addr().String()).Msg("bridge gRPC server listening, waiting for upstream requests")
+
+	return &Server{
+		gs:     gs,
+		lis:    lis,
+		bridge: bridge,
+		cfg:    cfg,
+	}, nil
+}
+
+// Addr 返回 gRPC 监听器的实际地址，可用于 etcd 服务注册。
+func (s *Server) Addr() string {
+	if s.lis == nil {
+		return ""
+	}
+	return s.lis.Addr().String()
+}
+
+// Start 启动 gRPC 服务，阻塞直到服务停止或出错。
+func (s *Server) Start() error {
+	return s.gs.Serve(s.lis)
+}
+
+// Stop 优雅停止 gRPC 服务。
+func (s *Server) Stop() {
+	s.gs.GracefulStop()
 }

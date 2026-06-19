@@ -25,6 +25,8 @@ type ServerConfig struct {
 	MaxConcurrentStreams uint32        `mapstructure:"max_concurrent_streams"` // 最大并发流
 	KeepaliveTime        time.Duration `mapstructure:"keepalive_time"`         // 连接保活时间
 	KeepaliveTimeout     time.Duration `mapstructure:"keepalive_timeout"`      // 保活超时
+	ServiceName          string        `mapstructure:"service_name"`           // 服务名
+	ServiceVersion       string        `mapstructure:"service_version"`        // 服务版本
 }
 
 // EtcdConfig etcd 服务发现配置
@@ -88,11 +90,11 @@ type RetryConfig struct {
 
 // ObservabilityConfig 可观测性配置
 type ObservabilityConfig struct {
-	LogLevel       string `mapstructure:"log_level"`       // 日志级别
-	TraceEndpoint  string `mapstructure:"trace_endpoint"`  // OTLP Trace 接收端
-	MetricsPort    int    `mapstructure:"metrics_port"`    // Prometheus 指标端口
-	ServiceName    string `mapstructure:"service_name"`    // 服务名
-	ServiceVersion string `mapstructure:"service_version"` // 服务版本
+	LogLevel       string `mapstructure:"log_level"`      // 日志级别
+	TraceEndpoint  string `mapstructure:"trace_endpoint"` // OTLP Trace 接收端
+	MetricsPort    int    `mapstructure:"metrics_port"`   // Prometheus 指标端口
+	ServiceName    string `mapstructure:"-"`              // 服务名
+	ServiceVersion string `mapstructure:"-"`              // 服务版本
 }
 
 var (

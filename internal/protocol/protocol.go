@@ -7,6 +7,8 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/types/known/anypb"
 
+	"github.com/daheige/registry"
+
 	"github.com/daheige/bridge-svc/internal/router"
 )
 
@@ -31,11 +33,11 @@ type Response struct {
 
 // Factory 创建对应协议的处理器
 // 根据下游微服务的协议类型，创建对应的 Handler
-func Factory(protocol router.ProtocolType) Handler {
+func Factory(protocol registry.ProtocolType) Handler {
 	switch protocol {
-	case router.ProtocolGRPC:
+	case registry.ProtocolGRPC:
 		return NewGRPCHandler() // 下游是 gRPC 服务
-	case router.ProtocolHTTP:
+	case registry.ProtocolHTTP:
 		return NewHTTPHandler() // 下游是 HTTP 服务
 	default:
 		return nil
