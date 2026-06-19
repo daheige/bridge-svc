@@ -1,4 +1,4 @@
-# 【go grpc bridge 服务架构设计与实现】
+# Go gRPC Bridge 服务架构设计与实现
 
 > **版本**: v3.2 (2026-06-19)  
 > **Go 版本**: 1.25.9+  
@@ -26,12 +26,12 @@
 
 ### 1.1 设计目标
 
-Bridge 服务作为**业务方与下游微服务之间的统一代理层**，承担以下核心职责：
+Bridge 是业务方与下游微服务之间的统一 gRPC 代理层，核心职责包括：
 
-- **统一协议入口**：业务方通过 **gRPC 协议** 调用 Bridge，Bridge 负责转发到下游不同协议的微服务。
+- **统一协议入口**：业务方通过 gRPC 调用 Bridge，Bridge 转发到下游 gRPC/HTTP 微服务。
 - **动态路由**：基于 `github.com/daheige/registry` 实现 etcd 服务发现，支持版本筛选与加权轮询。
 - **稳定性保障**：熔断、限流、重试、超时，防止级联故障。
-- **协议透明**：Bridge 对外统一暴露 gRPC 接口，内部根据 `protocol` 字段转发到下游 gRPC/HTTP 服务。
+- **协议透明**：对外统一暴露 gRPC 接口，内部按 `protocol` 字段选择下游协议。
 - **可观测性**：OpenTelemetry Trace + 结构化日志 + Prometheus 指标。
 
 ### 1.2 整体架构
@@ -204,17 +204,9 @@ bridge-svc/
 
 ### 3.1 `api/v1/bridge.proto`
 
-完整定义与仓库中一致，核心字段说明如下：
+完整定义见 [`api/v1/bridge.proto`](api/v1/bridge.proto)，核心字段如下：
 
 ```protobuf
-syntax = "proto3";
-package bridge.v1;
-
-import "google/protobuf/any.proto";
-import "google/rpc/status.proto";
-
-option go_package = "github.com/daheige/bridge-svc/api/v1;bridgev1";
-
 service BridgeService {
   rpc CallUnary(UnaryRequest) returns (UnaryResponse);
   rpc CallStream(stream StreamRequest) returns (stream StreamResponse);
@@ -222,20 +214,13 @@ service BridgeService {
 }
 
 message UnaryRequest {
-  string target = 1;      // "PackageName.ServiceName/MethodName"
-  string version = 2;     // 下游版本，如 "v1"；空表示默认版本
-  string protocol = 3;    // "GRPC" 或 "HTTP"
+  string target = 1;      // PackageName.ServiceName/MethodName
+  string version = 2;     // 下游版本，空表示默认版本
+  string protocol = 3;    // GRPC 或 HTTP
   google.protobuf.Any payload = 4;
   map<string, string> metadata = 5;
   uint32 timeout_ms = 6;  // 覆盖全局默认超时
-  RetryPolicy retry = 7;  // 可选：单次请求级重试策略
-}
-
-message RetryPolicy {
-  uint32 max_attempts = 1;
-  uint32 initial_backoff_ms = 2;
-  float backoff_multiplier = 3;
-  repeated int32 retryable_codes = 4;
+  RetryPolicy retry = 7;  // 单次请求级重试策略
 }
 
 message UnaryResponse {
@@ -245,11 +230,6 @@ message UnaryResponse {
   string upstream_node = 4;
   uint64 latency_us = 5;
 }
-
-message StreamRequest { ... }
-message StreamResponse { ... }
-message HealthRequest { string service = 1; }
-message HealthResponse { ... }
 ```
 
 ### 3.2 生成命令
@@ -273,30 +253,15 @@ protoc -I api/v1 \
 
 ### 4.1 `go.mod`
 
-```go
-module github.com/daheige/bridge-svc
+核心依赖见 [`go.mod`](go.mod)，主要包括：
 
-go 1.25.9
-
-require (
-    github.com/daheige/hello-pb v1.1.0
-    github.com/daheige/registry v1.1.0
-    github.com/fsnotify/fsnotify v1.10.1
-    github.com/go-resty/resty/v2 v2.17.2
-    github.com/prometheus/client_golang v1.20.5
-    github.com/rs/zerolog v1.35.1
-    github.com/sony/gobreaker/v2 v2.4.0
-    github.com/spf13/viper v1.21.0
-    go.opentelemetry.io/otel v1.44.0
-    go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.44.0
-    go.opentelemetry.io/otel/sdk v1.44.0
-    go.opentelemetry.io/otel/trace v1.44.0
-    golang.org/x/time v0.12.0
-    google.golang.org/genproto/googleapis/rpc v0.0.0-20260610212136-7ab31c22f7ad
-    google.golang.org/grpc v1.81.1
-    google.golang.org/protobuf v1.36.11
-)
-```
+- `google.golang.org/grpc` v1.81.1
+- `google.golang.org/protobuf` v1.36.11
+- `github.com/daheige/registry` v1.1.0
+- `github.com/sony/gobreaker/v2` v2.4.0
+- `github.com/spf13/viper` v1.21.0
+- `go.opentelemetry.io/otel` v1.44.0
+- `github.com/rs/zerolog` v1.35.1
 
 ### 4.2 `internal/config/config.go`
 
@@ -739,9 +704,10 @@ func (m *CircuitBreakerManager) Execute(endpoint string, fn func() (interface{},
 }
 ```
 
-### 4.10 `internal/resilience/retry.go` 与 `ratelimit.go`
+### 4.10 重试与限流
 
-`DoRetry` 提供指数退避重试；`RateLimiter` 基于令牌桶实现限流。当前 `RateLimiter` 已实现但**未接入**默认拦截器链，可按需开启。
+- `internal/resilience/retry.go`：指数退避重试。
+- `internal/resilience/ratelimit.go`：令牌桶限流，已实现但未接入默认拦截器链，可按需开启。
 
 ### 4.11 `internal/middleware/chain.go`
 
@@ -1227,18 +1193,7 @@ grpcurl -plaintext -d '{
 
 ### F. 版本说明
 
-| 包 | 当前版本 |
-|---|---|
-| `grpc-go` | v1.81.1 |
-| `protobuf` | v1.36.11 |
-| `etcd/client/v3` | v3.6.12 |
-| `registry` | v1.1.0 |
-| `otel` | v1.44.0 |
-| `gobreaker` | v2.4.0 |
-| `prometheus` | v1.20.5 |
-| `zerolog` | v1.35.1 |
-| `viper` | v1.21.0 |
-| `Go` | 1.25.9 |
+主要依赖版本见 [1.4 技术选型](#14-技术选型)，以 `go.mod` 为准。
 
 ---
 
