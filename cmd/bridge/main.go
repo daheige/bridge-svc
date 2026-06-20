@@ -1,15 +1,17 @@
 package main
 
 import (
+	"context"
 	"net"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
+	"github.com/daheige/hephfx/hestia"
 	"github.com/rs/zerolog/log"
 
-	"github.com/daheige/registry"
-	"github.com/daheige/registry/etcd"
+	"github.com/daheige/hephfx/hestia/etcd"
 
 	"github.com/daheige/bridge-svc/internal/config"
 	"github.com/daheige/bridge-svc/internal/server"
@@ -29,37 +31,42 @@ func main() {
 
 	// 将 0.0.0.0 / [::] 等通配监听地址转换为可访问地址（本地测试使用 127.0.0.1）。
 	// 生产环境建议配置独立 advertise_addr。
-	advertiseAddr := toAdvertiseAddr(srv.Addr())
+	// advertiseAddr := toAdvertiseAddr(srv.Addr())
+	advertiseAddr, err := hestia.Resolve(srv.Addr())
+	if err != nil {
+		log.Fatal().Err(err).Msg("resolve addr failed")
+	}
 
 	serviceName := cfg.Server.ServiceName
 	if serviceName == "" {
 		serviceName = "bridge-svc"
 	}
-
-	reg, err := etcd.NewServiceRegistry(
-		cfg.Etcd.Endpoints,
-		cfg.Etcd.Prefix,
-		serviceName,
-		registry.Endpoint{
-			Address:  advertiseAddr,
-			Protocol: registry.ProtocolGRPC,
-			Version:  cfg.Server.ServiceVersion,
-			Healthy:  true,
-			Weight:   100,
-			Tags: map[string]string{
-				"service": serviceName,
-				"version": cfg.Observability.ServiceVersion,
-			},
-		},
-		etcd.WithTTL(10),
+	regEntry, err := etcd.NewRegistry([]string{
+		"127.0.0.1:12379",
+	},
+		etcd.WithDialTimeout(10*time.Second),
+		etcd.WithPrefix("services"),
 	)
 	if err != nil {
-		log.Fatal().Err(err).Msg("create etcd registry failed")
+		log.Fatal().Msgf("failed to new service registry", err)
+	}
+	regService := &hestia.Service{
+		Network:  "tcp",
+		Name:     serviceName,
+		Address:  advertiseAddr,
+		Version:  "v1",
+		Created:  time.Now().Format("2006-01-02 15:04:05"),
+		Protocol: "GRPC",
+		Healthy:  true,
+	}
+	err = regEntry.Register(context.Background(), regService)
+	if err != nil {
+		log.Fatal().Msgf("failed to register service", err)
 	}
 
-	if err := reg.Register(); err != nil {
-		log.Fatal().Err(err).Msg("register bridge-svc to etcd failed")
-	}
+	// 注销服务并停止 gRPC 服务。
+	defer regEntry.Deregister(context.Background(), regService)
+
 	log.Info().Str("service", serviceName).Str("addr", advertiseAddr).Msg("registered bridge-svc to etcd")
 
 	// 优雅关闭：监听系统信号
@@ -85,12 +92,6 @@ func main() {
 	case sig := <-sigCh:
 		log.Info().Str("signal", sig.String()).Msg("shutdown signal received, graceful shutdown")
 	}
-
-	// 注销服务并停止 gRPC 服务。
-	if err := reg.Deregister(); err != nil {
-		log.Error().Err(err).Msg("deregister bridge-svc from etcd failed")
-	}
-
 }
 
 // toAdvertiseAddr 把监听地址中的通配地址替换为本地回环地址，

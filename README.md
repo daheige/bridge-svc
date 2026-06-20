@@ -71,7 +71,7 @@ protoc -I api/v1 \
 
 ```bash
 # 1. 启动 etcd
-# 2. 注册下游服务到 etcd（参考 github.com/daheige/registry）
+# 2. 将下游服务注册到 etcd（可使用 hephfx/hestia/etcd 或兼容注册库）
 # 3. 启动 Bridge
 make run
 ```
@@ -197,7 +197,7 @@ import (
     "google.golang.org/grpc/credentials/insecure"
     "google.golang.org/protobuf/types/known/anypb"
 
-    "github.com/daheige/registry/etcd"
+    "github.com/daheige/hephfx/hestia/etcd"
 
     bridgev1 "github.com/daheige/bridge-svc/api/v1"
 )
@@ -205,10 +205,10 @@ import (
 func main() {
     // 1. 创建 etcd 服务发现器
     // 实际使用时应从配置文件读取 etcd 地址与前缀。
-    discovery, err := etcd.NewEtcdDiscovery(
+    discovery, err := etcd.NewDiscovery(
         []string{"localhost:12379"}, // etcd 集群地址
-        "/services",                 // 服务注册前缀
-        5*time.Second,               // 连接超时
+        etcd.WithDialTimeout(5*time.Second),
+        etcd.WithPrefix("/services"), // 服务注册前缀
     )
     if err != nil {
         log.Fatalf("create etcd discovery failed: %v", err)
@@ -292,7 +292,7 @@ func main() {
 bridge-svc/
 ├── api/v1              # Bridge gRPC API 定义
 ├── client              # 客户端调用示例
-│   └── resolver        # 基于 etcd resolver 发现 Bridge 的示例
+│   └── resolver        # 基于 hephfx/hestia/etcd resolver 发现 Bridge 的示例
 ├── cmd/bridge          # 服务入口
 ├── config              # 运行时配置
 ├── internal            # 内部实现
@@ -411,29 +411,34 @@ export BRIDGE_OBSERVABILITY_LOG_LEVEL="info"
 
 ## 下游服务注册
 
-下游服务使用独立的 `github.com/daheige/registry` 库注册到 etcd：
+下游服务可使用 `github.com/daheige/hephfx/hestia/etcd` 注册到 etcd：
 
 ```go
 import (
-    "github.com/daheige/registry"
-    "github.com/daheige/registry/etcd"
+    "context"
+    "log"
+    "time"
+
+    "github.com/daheige/hephfx/hestia"
+    "github.com/daheige/hephfx/hestia/etcd"
 )
 
-reg, err := etcd.NewServiceRegistry(
+reg, err := etcd.NewRegistry(
     []string{"127.0.0.1:2379"},
-    "/services/",
-    "Hello.Greeter",
-    registry.Endpoint{
-        Address:  "127.0.0.1:50051",
-        Weight:   100,
-        Protocol: registry.ProtocolGRPC,
-        Version:  "v1",
-        Healthy:  true,
-    },
+    etcd.WithPrefix("/services/"),
 )
 if err != nil { log.Fatal(err) }
-if err := reg.Register(); err != nil { log.Fatal(err) }
-defer reg.Deregister()
+
+service := &hestia.Service{
+    Name:     "Hello.Greeter",
+    Address:  "127.0.0.1:50051",
+    Weight:   100,
+    Protocol: "GRPC",
+    Version:  "v1",
+    Healthy:  true,
+}
+if err := reg.Register(context.Background(), service); err != nil { log.Fatal(err) }
+defer reg.Deregister(context.Background(), service)
 ```
 
 > 下游 gRPC 服务需开启 gRPC Reflection，Bridge 才能正确填充响应 `Any.TypeUrl`。如果下游未开启反射，客户端仍可通过 `proto.Unmarshal(resp.Payload.Value, &res)` 绕过类型校验。

@@ -11,7 +11,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog/log"
 
-	"github.com/daheige/registry/etcd"
+	"github.com/daheige/hephfx/hestia/etcd"
 
 	bridgev1 "github.com/daheige/bridge-svc/api/v1"
 	"github.com/daheige/bridge-svc/internal/config"
@@ -41,7 +41,10 @@ type BridgeServer struct {
 
 // New 创建 BridgeServer 实例
 func New(cfg *config.Config) (*BridgeServer, error) {
-	discovery, err := etcd.NewEtcdDiscovery(cfg.Etcd.Endpoints, cfg.Etcd.Prefix, cfg.Etcd.DialTimeout)
+	discovery, err := etcd.NewDiscovery(
+		cfg.Etcd.Endpoints, etcd.WithPrefix(cfg.Etcd.Prefix),
+		etcd.WithDialTimeout(cfg.Etcd.DialTimeout),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("init discovery: %w", err)
 	}

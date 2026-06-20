@@ -4,10 +4,9 @@ import (
 	"context"
 	"time"
 
+	"github.com/daheige/hephfx/hestia"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/types/known/anypb"
-
-	"github.com/daheige/registry"
 
 	"github.com/daheige/bridge-svc/internal/router"
 )
@@ -21,7 +20,8 @@ type Handler interface {
 	// payload: 业务负载（从业务方请求中透传）
 	// md: 元数据（从业务方请求中透传）
 	// timeout: 超时时间
-	Call(ctx context.Context, target *router.RouteTarget, payload *anypb.Any, md metadata.MD, timeout time.Duration) (*Response, error)
+	Call(ctx context.Context, target *router.RouteTarget, payload *anypb.Any,
+		md metadata.MD, timeout time.Duration) (*Response, error)
 }
 
 // Response 统一响应结构（从下游微服务返回）
@@ -33,11 +33,11 @@ type Response struct {
 
 // Factory 创建对应协议的处理器
 // 根据下游微服务的协议类型，创建对应的 Handler
-func Factory(protocol registry.ProtocolType) Handler {
+func Factory(protocol hestia.ProtocolType) Handler {
 	switch protocol {
-	case registry.ProtocolGRPC:
+	case hestia.ProtocolGRPC:
 		return NewGRPCHandler() // 下游是 gRPC 服务
-	case registry.ProtocolHTTP:
+	case hestia.ProtocolHTTP:
 		return NewHTTPHandler() // 下游是 HTTP 服务
 	default:
 		return nil

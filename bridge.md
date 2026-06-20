@@ -1,6 +1,6 @@
 # Go gRPC Bridge 服务架构设计与实现
 
-> **版本**: v3.2 (2026-06-19)  
+> **版本**: v3.3 (2026-06-20)  
 > **Go 版本**: 1.25.9+  
 > **依赖版本**: 与 `go.mod` 当前状态保持一致
 
@@ -29,7 +29,7 @@
 Bridge 是业务方与下游微服务之间的统一 gRPC 代理层，核心职责包括：
 
 - **统一协议入口**：业务方通过 gRPC 调用 Bridge，Bridge 转发到下游 gRPC/HTTP 微服务。
-- **动态路由**：基于 `github.com/daheige/registry` 实现 etcd 服务发现，支持版本筛选与加权轮询。
+- **动态路由**：基于 `github.com/daheige/hephfx/hestia` 实现 etcd 服务发现，支持版本筛选与加权轮询。
 - **稳定性保障**：熔断、限流、重试、超时，防止级联故障。
 - **协议透明**：对外统一暴露 gRPC 接口，内部按 `protocol` 字段选择下游协议。
 - **可观测性**：OpenTelemetry Trace + 结构化日志 + Prometheus 指标。
@@ -129,7 +129,7 @@ sequenceDiagram
 | gRPC 框架 | `google.golang.org/grpc` | **v1.81.1** | 当前 `go.mod` 锁定版本 |
 | Protobuf | `google.golang.org/protobuf` | **v1.36.11** | 与 grpc-go v1.81 兼容 |
 | etcd 客户端 | `go.etcd.io/etcd/client/v3` | **v3.6.12** | 当前 `go.mod` 锁定版本 |
-| 服务注册/发现 | `github.com/daheige/registry` | **v1.1.0** | 独立 registry 库，统一服务模型 |
+| 服务注册/发现 | `github.com/daheige/hephfx` | **v1.5.1** | 统一服务模型与 etcd 注册发现 |
 | 熔断器 | `github.com/sony/gobreaker/v2` | **v2.4.0** | 支持泛型，按 endpoint 维度隔离 |
 | 限流 | `golang.org/x/time/rate` | **v0.12.0** | 标准扩展 |
 | 可观测性 | `go.opentelemetry.io/otel` | **v1.44.0** | OTLP Trace 导出 |
@@ -154,7 +154,7 @@ bridge-svc/
 ├── client/
 │   ├── main.go                   # 直连 Bridge 的 Go 客户端示例
 │   └── resolver/
-│       └── main.go               # 基于 etcd resolver 发现 Bridge 的示例
+│       └── main.go               # 基于 hephfx/hestia/etcd resolver 发现 Bridge 的示例
 ├── cmd/
 │   └── bridge/
 │       └── main.go               # 服务入口（加载配置、创建 Server、etcd 自注册、优雅关闭）
@@ -164,7 +164,7 @@ bridge-svc/
 │   ├── server/
 │   │   └── server.go             # grpc.Server 组装 + BridgeService 实现 + metrics HTTP
 │   ├── router/
-│   │   ├── router.go             # 路由决策（基于 registry.Discovery）
+│   │   ├── router.go             # 路由决策（基于 hestia.Discovery）
 │   │   └── balancer.go           # 加权轮询负载均衡
 │   ├── protocol/
 │   │   ├── protocol.go           # 协议处理器接口
@@ -257,7 +257,7 @@ protoc -I api/v1 \
 
 - `google.golang.org/grpc` v1.81.1
 - `google.golang.org/protobuf` v1.36.11
-- `github.com/daheige/registry` v1.1.0
+- `github.com/daheige/hephfx` v1.5.1
 - `github.com/sony/gobreaker/v2` v2.4.0
 - `github.com/spf13/viper` v1.21.0
 - `go.opentelemetry.io/otel` v1.44.0
@@ -360,7 +360,7 @@ func Load(path string) (*Config, error) {
 
 ### 4.3 `internal/router/router.go`
 
-当前 Router 依赖 `github.com/daheige/registry` 的 `Discovery` 接口，不直接操作 etcd：
+当前 Router 依赖 `github.com/daheige/hephfx/hestia` 的 `Discovery` 接口，不直接操作 etcd：
 
 ```go
 package router
@@ -372,17 +372,17 @@ import (
 
     "google.golang.org/grpc/metadata"
 
-    "github.com/daheige/registry"
+    "github.com/daheige/hephfx/hestia"
 )
 
-type ProtocolType = registry.ProtocolType
+type ProtocolType = hestia.ProtocolType
 
 const (
-    ProtocolGRPC = registry.ProtocolGRPC
-    ProtocolHTTP = registry.ProtocolHTTP
+    ProtocolGRPC = hestia.ProtocolGRPC
+    ProtocolHTTP = hestia.ProtocolHTTP
 )
 
-type Endpoint = registry.Endpoint
+type Endpoint = hestia.Service
 
 type RouteContext struct {
     Target       string
@@ -397,15 +397,15 @@ type RouteTarget struct {
     ServiceName string
     MethodName  string
     Version     string
-    Endpoint    Endpoint
+    Endpoint    *Endpoint
 }
 
 type Router struct {
-    discovery registry.Discovery
+    discovery hestia.Discovery
     balancer  LoadBalancer
 }
 
-func New(discovery registry.Discovery) (*Router, error) {
+func New(discovery hestia.Discovery) (*Router, error) {
     if discovery == nil {
         return nil, fmt.Errorf("discovery is nil")
     }
@@ -427,7 +427,7 @@ func (r *Router) Route(ctx context.Context, routeCtx RouteContext) (*RouteTarget
     service, method := parseTarget(routeCtx.Target)
     version := routeCtx.Version
 
-    endpoints, err := r.discovery.GetEndpoints(ctx, service, version)
+    endpoints, err := r.discovery.GetServices(ctx, service, version)
     if err != nil {
         return nil, fmt.Errorf("lookup endpoints: %w", err)
     }
@@ -446,13 +446,23 @@ func (r *Router) Route(ctx context.Context, routeCtx RouteContext) (*RouteTarget
         Endpoint:    selected,
     }, nil
 }
+
+func filterHealthy(endpoints []*Endpoint) []*Endpoint {
+    var result []*Endpoint
+    for _, ep := range endpoints {
+        if ep.Healthy {
+            result = append(result, ep)
+        }
+    }
+    return result
+}
 ```
 
 ### 4.4 `internal/router/balancer.go`
 
 ```go
 type LoadBalancer interface {
-    Select(endpoints []Endpoint, ctx RouteContext) Endpoint
+    Select(endpoints []*Endpoint, ctx RouteContext) *Endpoint
 }
 
 type WeightedRoundRobin struct {
@@ -461,7 +471,7 @@ type WeightedRoundRobin struct {
 
 func NewWeightedRoundRobin() *WeightedRoundRobin { return &WeightedRoundRobin{} }
 
-func (w *WeightedRoundRobin) Select(endpoints []Endpoint, ctx RouteContext) Endpoint {
+func (w *WeightedRoundRobin) Select(endpoints []*Endpoint, ctx RouteContext) *Endpoint {
     var totalWeight uint32
     for _, ep := range endpoints {
         totalWeight += ep.Weight
@@ -498,11 +508,11 @@ type Response struct {
     LatencyUs uint64
 }
 
-func Factory(protocol registry.ProtocolType) Handler {
+func Factory(protocol hestia.ProtocolType) Handler {
     switch protocol {
-    case registry.ProtocolGRPC:
+    case hestia.ProtocolGRPC:
         return NewGRPCHandler()
-    case registry.ProtocolHTTP:
+    case hestia.ProtocolHTTP:
         return NewHTTPHandler()
     default:
         return nil
@@ -760,7 +770,30 @@ var (
 
 ### 5.1 `internal/server/server.go`
 
-当前实现为 `NewServer` / `Start` / `Stop` / `Addr` 结构，便于在 `cmd/bridge/main.go` 中获取监听地址后注册到 etcd。
+`BridgeServer.New` 内部通过 `hephfx/hestia/etcd` 创建服务发现器，并交给 `Router` 使用：
+
+```go
+func New(cfg *config.Config) (*BridgeServer, error) {
+    discovery, err := etcd.NewDiscovery(
+        cfg.Etcd.Endpoints, etcd.WithPrefix(cfg.Etcd.Prefix),
+        etcd.WithDialTimeout(cfg.Etcd.DialTimeout),
+    )
+    if err != nil {
+        return nil, fmt.Errorf("init discovery: %w", err)
+    }
+
+    r, err := router.New(discovery)
+    if err != nil {
+        return nil, fmt.Errorf("init router: %w", err)
+    }
+
+    return &BridgeServer{
+        router:     r,
+        breakerMgr: resilience.NewCircuitBreakerManager(cfg.Resilience.CircuitBreaker),
+        cfg:        cfg,
+    }, nil
+}
+```
 
 ```go
 type Server struct {
@@ -840,37 +873,40 @@ func main() {
         log.Fatal().Err(err).Msg("create server failed")
     }
 
-    advertiseAddr := toAdvertiseAddr(srv.Addr())
+    advertiseAddr, err := hestia.Resolve(srv.Addr())
+    if err != nil {
+        log.Fatal().Err(err).Msg("resolve addr failed")
+    }
 
     serviceName := cfg.Server.ServiceName
     if serviceName == "" {
         serviceName = "bridge-svc"
     }
 
-    reg, err := etcd.NewServiceRegistry(
+    regEntry, err := etcd.NewRegistry(
         cfg.Etcd.Endpoints,
-        cfg.Etcd.Prefix,
-        serviceName,
-        registry.Endpoint{
-            Address:  advertiseAddr,
-            Protocol: registry.ProtocolGRPC,
-            Version:  cfg.Server.ServiceVersion,
-            Healthy:  true,
-            Weight:   100,
-            Tags: map[string]string{
-                "service": serviceName,
-                "version": cfg.Server.ServiceVersion,
-            },
-        },
-        etcd.WithTTL(10),
+        etcd.WithDialTimeout(10*time.Second),
+        etcd.WithPrefix(cfg.Etcd.Prefix),
     )
     if err != nil {
         log.Fatal().Err(err).Msg("create etcd registry failed")
     }
 
-    if err := reg.Register(); err != nil {
+    regService := &hestia.Service{
+        Network:  "tcp",
+        Name:     serviceName,
+        Address:  advertiseAddr,
+        Version:  cfg.Server.ServiceVersion,
+        Created:  time.Now().Format("2006-01-02 15:04:05"),
+        Protocol: "GRPC",
+        Healthy:  true,
+    }
+    if err := regEntry.Register(context.Background(), regService); err != nil {
         log.Fatal().Err(err).Msg("register bridge-svc to etcd failed")
     }
+    defer regEntry.Deregister(context.Background(), regService)
+
+    log.Info().Str("service", serviceName).Str("addr", advertiseAddr).Msg("registered bridge-svc to etcd")
 
     sigCh := make(chan os.Signal, 1)
     signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -891,14 +927,10 @@ func main() {
     case sig := <-sigCh:
         log.Info().Str("signal", sig.String()).Msg("shutdown signal received, graceful shutdown")
     }
-
-    if err := reg.Deregister(); err != nil {
-        log.Error().Err(err).Msg("deregister bridge-svc from etcd failed")
-    }
 }
 ```
 
-`toAdvertiseAddr` 将 `0.0.0.0` / `::` 通配地址替换为 `127.0.0.1`，便于本地 etcd 发现测试；生产环境建议配置独立的 `advertise_addr`。
+`hestia.Resolve` 将 `0.0.0.0` / `::` 通配地址替换为 `127.0.0.1`，便于本地 etcd 发现测试；生产环境建议配置独立的 `advertise_addr`。
 
 ---
 
@@ -1085,10 +1117,10 @@ resp, err := client.CallUnary(ctx, &bridgev1.UnaryRequest{
 ### 9.2 通过 etcd resolver 发现 Bridge
 
 ```go
-discovery, err := etcd.NewEtcdDiscovery(
+discovery, err := etcd.NewDiscovery(
     []string{"localhost:12379"},
-    "/services",
-    5*time.Second,
+    etcd.WithDialTimeout(5*time.Second),
+    etcd.WithPrefix("/services"),
 )
 etcd.RegisterEtcdResolver(discovery, "etcd")
 
@@ -1101,29 +1133,34 @@ conn, err := grpc.NewClient(
 
 ### 9.3 下游微服务注册到 etcd
 
-使用独立库 `github.com/daheige/registry`：
+使用 `github.com/daheige/hephfx/hestia/etcd`：
 
 ```go
 import (
-    "github.com/daheige/registry"
-    "github.com/daheige/registry/etcd"
+    "context"
+    "log"
+    "time"
+
+    "github.com/daheige/hephfx/hestia"
+    "github.com/daheige/hephfx/hestia/etcd"
 )
 
-reg, err := etcd.NewServiceRegistry(
+reg, err := etcd.NewRegistry(
     []string{"127.0.0.1:2379"},
-    "/services/",
-    "Hello.Greeter",
-    registry.Endpoint{
-        Address:  "127.0.0.1:50051",
-        Weight:   100,
-        Protocol: registry.ProtocolGRPC,
-        Version:  "v1",
-        Healthy:  true,
-    },
+    etcd.WithPrefix("/services/"),
 )
 if err != nil { log.Fatal(err) }
-if err := reg.Register(); err != nil { log.Fatal(err) }
-defer reg.Deregister()
+
+service := &hestia.Service{
+    Name:     "Hello.Greeter",
+    Address:  "127.0.0.1:50051",
+    Weight:   100,
+    Protocol: "GRPC",
+    Version:  "v1",
+    Healthy:  true,
+}
+if err := reg.Register(context.Background(), service); err != nil { log.Fatal(err) }
+defer reg.Deregister(context.Background(), service)
 ```
 
 ### 9.4 target 解析规则
@@ -1158,7 +1195,7 @@ grpcurl -plaintext -d '{
 | 零分配日志 | `zerolog` 结构化 JSON 日志 | 日志路径低分配 |
 | 连接复用 | `grpc.ClientConn` 按地址缓存 | 避免重复 TCP 握手 |
 | 无锁缓存 | `sync.Map` 存储连接池 | 减少锁竞争 |
-| 本地路由表 | `registry.Discovery` 内部缓存 + Watch | 查询路径无网络 I/O |
+| 本地路由表 | `hestia.Discovery` 内部缓存 + Watch | 查询路径无网络 I/O |
 
 ---
 
@@ -1188,8 +1225,8 @@ grpcurl -plaintext -d '{
 
 ### E. 服务发现
 
-- 依赖外部 `github.com/daheige/registry` 库。
-- Bridge 内部不直接操作 etcd，仅依赖 `registry.Discovery` 接口。
+- 依赖外部 `github.com/daheige/hephfx/hestia` 库。
+- Bridge 内部不直接操作 etcd，仅依赖 `hestia.Discovery` 接口。
 
 ### F. 版本说明
 
@@ -1197,5 +1234,5 @@ grpcurl -plaintext -d '{
 
 ---
 
-*文档版本: v3.2 | 最后更新: 2026-06-19*  
+*文档版本: v3.3 | 最后更新: 2026-06-20*  
 *Go 版本: 1.25.9+ | 依赖版本: 与 go.mod 保持一致*

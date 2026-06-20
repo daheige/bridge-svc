@@ -11,7 +11,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/anypb"
 
-	"github.com/daheige/registry/etcd"
+	"github.com/daheige/hephfx/hestia/etcd"
 
 	bridgev1 "github.com/daheige/bridge-svc/api/v1"
 )
@@ -19,16 +19,16 @@ import (
 func main() {
 	// 1. 创建 etcd 服务发现器
 	// 实际使用时应从配置文件读取 etcd 地址与前缀。
-	discovery, err := etcd.NewEtcdDiscovery(
+	discovery, err := etcd.NewDiscovery(
 		[]string{"localhost:12379"}, // etcd 集群地址
-		"/services",                 // 服务注册前缀
-		5*time.Second,               // 连接超时
+		etcd.WithDialTimeout(10*time.Second),
+		etcd.WithPrefix("services"),
 	)
 	if err != nil {
 		log.Fatalf("create etcd discovery failed: %v", err)
 	}
 
-	// 2. 注册 etcd gRPC resolver，scheme 为空则默认使用 "etcd"
+	// 2. 注册 etcd gRPC resolver，scheme 使用 "etcd"
 	etcd.RegisterEtcdResolver(discovery)
 
 	// 3. 通过 etcd resolver 发现 Bridge 服务并建立 gRPC 连接

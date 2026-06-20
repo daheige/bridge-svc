@@ -6,7 +6,7 @@ import (
 
 // LoadBalancer 负载均衡接口
 type LoadBalancer interface {
-	Select(endpoints []Endpoint, ctx RouteContext) Endpoint
+	Select(endpoints []*Endpoint, ctx RouteContext) *Endpoint
 }
 
 // WeightedRoundRobin 加权轮询负载均衡器
@@ -20,7 +20,7 @@ func NewWeightedRoundRobin() *WeightedRoundRobin {
 }
 
 // Select 按权重选择下游节点
-func (w *WeightedRoundRobin) Select(endpoints []Endpoint, ctx RouteContext) Endpoint {
+func (w *WeightedRoundRobin) Select(endpoints []*Endpoint, ctx RouteContext) *Endpoint {
 	totalWeight := uint32(0)
 	for _, ep := range endpoints {
 		totalWeight += ep.Weight

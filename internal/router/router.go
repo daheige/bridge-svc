@@ -7,19 +7,14 @@ import (
 
 	"google.golang.org/grpc/metadata"
 
-	"github.com/daheige/registry"
+	"github.com/daheige/hephfx/hestia"
 )
 
 // ProtocolType 下游微服务协议类型（复用 registry 定义）。
-type ProtocolType = registry.ProtocolType
-
-const (
-	ProtocolGRPC = registry.ProtocolGRPC
-	ProtocolHTTP = registry.ProtocolHTTP
-)
+type ProtocolType = hestia.ProtocolType
 
 // Endpoint 下游微服务节点（复用 registry 定义）。
-type Endpoint = registry.Endpoint
+type Endpoint = hestia.Service
 
 // RouteContext 路由上下文（从业务方请求中提取）。
 type RouteContext struct {
@@ -33,20 +28,20 @@ type RouteContext struct {
 
 // RouteTarget 路由结果（选中的下游微服务节点）。
 type RouteTarget struct {
-	ServiceName string   // 服务名，如 "order_service"
-	MethodName  string   // 方法名，如 "CreateOrder"
-	Version     string   // 版本号，如 "v2"
-	Endpoint    Endpoint // 选中的节点
+	ServiceName string    // 服务名，如 "order_service"
+	MethodName  string    // 方法名，如 "CreateOrder"
+	Version     string    // 版本号，如 "v2"
+	Endpoint    *Endpoint // 选中的节点
 }
 
 // Router 路由引擎，只依赖 registry.Discovery 接口，不依赖具体实现。
 type Router struct {
-	discovery registry.Discovery
+	discovery hestia.Discovery
 	balancer  LoadBalancer
 }
 
 // New 创建路由引擎。
-func New(discovery registry.Discovery) (*Router, error) {
+func New(discovery hestia.Discovery) (*Router, error) {
 	if discovery == nil {
 		return nil, fmt.Errorf("discovery is nil")
 	}
@@ -72,7 +67,7 @@ func (r *Router) Route(ctx context.Context, routeCtx RouteContext) (*RouteTarget
 	service, method := parseTarget(routeCtx.Target)
 	version := routeCtx.Version
 
-	endpoints, err := r.discovery.GetEndpoints(ctx, service, version)
+	endpoints, err := r.discovery.GetServices(ctx, service, version)
 	if err != nil {
 		return nil, fmt.Errorf("lookup endpoints: %w", err)
 	}
@@ -92,8 +87,8 @@ func (r *Router) Route(ctx context.Context, routeCtx RouteContext) (*RouteTarget
 	}, nil
 }
 
-func filterHealthy(endpoints []Endpoint) []Endpoint {
-	var result []Endpoint
+func filterHealthy(endpoints []*Endpoint) []*Endpoint {
+	var result []*Endpoint
 	for _, ep := range endpoints {
 		if ep.Healthy {
 			result = append(result, ep)
