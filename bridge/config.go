@@ -2,7 +2,7 @@ package bridge
 
 import (
 	"fmt"
-	"time"
+	"strings"
 
 	"github.com/daheige/hephfx/settings"
 )
@@ -17,8 +17,7 @@ type ServiceConfig struct {
 	Name     string            `mapstructure:"name"`     // 逻辑服务名，如 uc-svc
 	Target   string            `mapstructure:"target"`   // 下游 gRPC 地址，如 uc.cluster.local:8080
 	Service  string            `mapstructure:"service"`  // gRPC 完整服务名，如 Hello.Greeter；为空时使用 Name
-	Version  string            `mapstructure:"version"`  // 协议版本号
-	Timeout  time.Duration     `mapstructure:"timeout"`  // 该服务默认调用超时
+	Version  string            `mapstructure:"version"`  // 协议版本号，预留字段
 	Metadata map[string]string `mapstructure:"metadata"` // 该服务默认透传元数据
 }
 
@@ -39,8 +38,8 @@ func LoadConfigFrom(cfg settings.Config) (*Config, error) {
 
 func configFromSettings(s settings.Config) (*Config, error) {
 	var cfg Config
-	if s.IsSet("services") {
-		if err := s.ReadSection("services", &cfg.Services); err != nil {
+	if s.IsSet("bridge_services") {
+		if err := s.ReadSection("bridge_services", &cfg.Services); err != nil {
 			return nil, fmt.Errorf("read services section: %w", err)
 		}
 	}
@@ -49,9 +48,6 @@ func configFromSettings(s settings.Config) (*Config, error) {
 }
 
 func (c ServiceConfig) fullServiceName() string {
-	if c.Service != "" {
-		return c.Service
-	}
-
-	return c.Name
+	name := strings.Trim(c.Service, "/")
+	return name
 }

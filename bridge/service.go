@@ -14,43 +14,42 @@ import (
 type Service struct {
 	cfg  *ServiceConfig
 	conn *grpc.ClientConn
-	opts ClientOptions
 }
 
 func newService(cfg *ServiceConfig, opts ClientOptions) (*Service, error) {
 	dialOpts := append([]grpc.DialOption{
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	}, opts.DialOptions...)
+		grpc.WithDefaultServiceConfig(opts.serviceConfig), // 客户端负载均衡策略
+		grpc.WithIdleTimeout(opts.idleTimeout),            // 连接生命周期
+		grpc.WithMaxCallAttempts(opts.maxCallAttempts),    // 最大重试次数
+	}, opts.options...)
+
+	// 合并服务的 grpc.DialOption
+	if extra, ok := opts.serviceDialOpts[cfg.Name]; ok {
+		dialOpts = append(dialOpts, extra...)
+	}
 
 	conn, err := grpc.NewClient(cfg.Target, dialOpts...)
 	if err != nil {
-		return nil, fmt.Errorf("dial %s: %w", cfg.Target, err)
+		return nil, fmt.Errorf("failed to create service:%s target:%s gRPC client err:%w", cfg.Service, cfg.Target, err)
 	}
 
 	return &Service{
 		cfg:  cfg,
 		conn: conn,
-		opts: opts,
 	}, nil
 }
 
-// Invoke 调用该服务下的指定方法。
-// method 为方法名，如 SayHello。
+// Invoke 调用该服务下的方法。
+// method 可以是方法名，如 SayHello），也可以是完整 gRPC 路径，如 "/Hello.Greeter/SayHello"
 func (s *Service) Invoke(ctx context.Context, method string, req, resp proto.Message, opts ...grpc.CallOption) error {
 	fullMethod := method
 	if !strings.HasPrefix(method, "/") {
-		fullMethod = fmt.Sprintf("/%s/%s", s.cfg.fullServiceName(), method)
+		fullMethod = fmt.Sprintf("/%s/%s", s.FullServiceName(), method)
 	}
 
-	return s.InvokeFull(ctx, fullMethod, req, resp, opts...)
-}
-
-// InvokeFull 通过完整 gRPC 方法路径调用，如 "/Hello.Greeter/SayHello"。
-func (s *Service) InvokeFull(ctx context.Context, fullMethod string, req, resp proto.Message, opts ...grpc.CallOption) error {
+	// 合并metadata
 	ctx = mergeMetadata(ctx, s.cfg.Metadata)
-	ctx, cancel := withTimeout(ctx, s.cfg.Timeout, s.opts.DefaultTimeout)
-	defer cancel()
-
 	return s.conn.Invoke(ctx, fullMethod, req, resp, opts...)
 }
 
@@ -93,4 +92,9 @@ func (s *Service) Name() string {
 	}
 
 	return s.cfg.Name
+}
+
+// FullServiceName 返回service_name
+func (s *Service) FullServiceName() string {
+	return s.cfg.fullServiceName()
 }

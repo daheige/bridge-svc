@@ -2,26 +2,21 @@ package bridge
 
 import (
 	"testing"
-	"time"
 )
 
 func TestLoadConfig(t *testing.T) {
 	cfg := &Config{
 		Services: []ServiceConfig{
-			{Name: "uc-svc", Target: "uc.cluster.local:8080"},
+			{Name: "uc-svc", Target: "uc.cluster.local:8080", Service: "user.UserService"},
 			{Name: "rbac-svc", Target: "rbac.cluster.local:8080", Service: "rbac.RBAC"},
 		},
 	}
 
-	client, err := NewClient(cfg, WithDefaultTimeout(3*time.Second))
+	client, err := NewClient(cfg)
 	if err != nil {
 		t.Fatalf("new client failed: %v", err)
 	}
 	defer client.Close()
-
-	if client.opts.DefaultTimeout != 3*time.Second {
-		t.Fatalf("default timeout mismatch: got %v", client.opts.DefaultTimeout)
-	}
 
 	svc, err := client.Service("rbac-svc")
 	if err != nil {
@@ -30,8 +25,8 @@ func TestLoadConfig(t *testing.T) {
 	if svc.Name() != "rbac-svc" {
 		t.Fatalf("service name mismatch: got %s", svc.Name())
 	}
-	if svc.Config().fullServiceName() != "rbac.RBAC" {
-		t.Fatalf("full service name mismatch: got %s", svc.Config().fullServiceName())
+	if svc.FullServiceName() != "rbac.RBAC" {
+		t.Fatalf("full service name mismatch: got %s", svc.FullServiceName())
 	}
 }
 
@@ -59,7 +54,7 @@ func TestFullServiceName(t *testing.T) {
 		cfg  ServiceConfig
 		want string
 	}{
-		{cfg: ServiceConfig{Name: "uc-svc"}, want: "uc-svc"},
+		{cfg: ServiceConfig{Name: "uc-svc", Service: "uc.UserService"}, want: "uc.UserService"},
 		{cfg: ServiceConfig{Name: "greeter-svc", Service: "Hello.Greeter"}, want: "Hello.Greeter"},
 	}
 

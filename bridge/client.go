@@ -26,7 +26,11 @@ func NewClient(cfg *Config, opts ...ClientOption) (*Client, error) {
 	}
 
 	o := ClientOptions{
-		DefaultTimeout: 5 * time.Second,
+		options:         make([]grpc.DialOption, 0, 10),
+		serviceDialOpts: make(map[string][]grpc.DialOption, 10),
+		idleTimeout:     30 * time.Minute,
+		maxCallAttempts: 3,
+		serviceConfig:   `{"loadBalancingConfig": [{"round_robin":{}}]}`,
 	}
 	for _, opt := range opts {
 		opt(&o)
@@ -49,8 +53,9 @@ func NewClient(cfg *Config, opts ...ClientOption) (*Client, error) {
 
 		svc, err := newService(svcCfg, o)
 		if err != nil {
-			return nil, fmt.Errorf("create service %s: %w", svcCfg.Name, err)
+			return nil, fmt.Errorf("create service %s:%w", svcCfg.Name, err)
 		}
+
 		client.services[svcCfg.Name] = svc
 	}
 
@@ -72,6 +77,7 @@ func (c *Client) Service(name string) (*Service, error) {
 
 // Invoke 按服务名调用下游 gRPC 方法。
 // method 为方法名，如 SayHello；req/resp 为请求与响应 protobuf 消息。
+// 如需使用完整 gRPC 路径，可通过 client.Service(name).Invoke(ctx, "/Hello.Greeter/SayHello", req, resp) 调用。
 func (c *Client) Invoke(ctx context.Context, serviceName, method string, req, resp proto.Message, opts ...grpc.CallOption) error {
 	svc, err := c.Service(serviceName)
 	if err != nil {
@@ -79,16 +85,6 @@ func (c *Client) Invoke(ctx context.Context, serviceName, method string, req, re
 	}
 
 	return svc.Invoke(ctx, method, req, resp, opts...)
-}
-
-// InvokeFull 按完整 gRPC 方法路径调用，如 "/Hello.Greeter/SayHello"。
-func (c *Client) InvokeFull(ctx context.Context, serviceName, fullMethod string, req, resp proto.Message, opts ...grpc.CallOption) error {
-	svc, err := c.Service(serviceName)
-	if err != nil {
-		return err
-	}
-
-	return svc.InvokeFull(ctx, fullMethod, req, resp, opts...)
 }
 
 // Close 关闭所有下游服务连接。
@@ -126,18 +122,4 @@ func mergeMetadata(ctx context.Context, md map[string]string) context.Context {
 	}
 
 	return metadata.NewOutgoingContext(ctx, out)
-}
-
-// withTimeout 如果 ctx 没有设置 deadline，则根据服务或默认超时自动设置。
-func withTimeout(ctx context.Context, svcTimeout, defaultTimeout time.Duration) (context.Context, context.CancelFunc) {
-	timeout := svcTimeout
-	if timeout == 0 {
-		timeout = defaultTimeout
-	}
-
-	if _, ok := ctx.Deadline(); !ok && timeout > 0 {
-		return context.WithTimeout(ctx, timeout)
-	}
-
-	return ctx, func() {}
 }

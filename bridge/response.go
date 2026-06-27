@@ -26,5 +26,5 @@ func GRPCError(err error) (*status.Status, bool) {
 }
 
 func serviceNotFound(name string) error {
-	return fmt.Errorf("%w: %s", ErrServiceNotFound, name)
+	return fmt.Errorf("%s:%w", name, ErrServiceNotFound)
 }
